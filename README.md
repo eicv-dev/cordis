@@ -1,6 +1,9 @@
 # cordis
 The next generation of Cordis.
 
+## Contributing
+Fork and PR.
+
 ## Maintainers
 Maintained by the KSF Cybersecurity Initative, a project of LVMLabs, by the following contributors:
 
