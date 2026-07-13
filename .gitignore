@@ -219,3 +219,10 @@ __marimo__/
 
 # Database
 chat.db
+
+# App run logs
+app.log
+app.pid
+
+# npm
+package-lock.json
