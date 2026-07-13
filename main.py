@@ -336,7 +336,7 @@ def register_account(account_data: models.UserRegister, db: Session = Depends(ge
         hashed_password=secured_hash,
         permissions=["USER_BASIC"],
         status="ONLINE",
-        description="ryan @ko6lvm is superior in all forms ever possible", # yes ryan was here and i am superior
+        description="", # yes ryan was here and i am superior
         profile_picture=""
     )
     db.add(db_user)
