@@ -21,6 +21,8 @@ elif [ -d ".venv" ]; then
     source .venv/bin/activate
 fi
 
+pip3 install -r requirements.txt
+
 cd frontend
 npm run build
 cd ..
