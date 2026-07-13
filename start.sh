@@ -21,6 +21,10 @@ elif [ -d ".venv" ]; then
     source .venv/bin/activate
 fi
 
+cd frontend
+npm run build
+cd ..
+
 # 3. Check if server is already running on port 8000
 PORT=8000
 PID=$(lsof -t -i:$PORT 2>/dev/null)

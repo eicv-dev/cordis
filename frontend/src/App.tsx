@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { Compass, Plus, Hash, LogOut, Send, Loader2, Settings, Users, Home, MessageSquare } from 'lucide-react';
 
-const API_BASE = import.meta.env.VITE_API_BASE || "http://127.0.0.1:8000";
+const API_BASE = import.meta.env.VITE_API_BASE || (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1' ? "http://127.0.0.1:8000" : "");
 
 function App() {
   const [token, setToken] = useState<string | null>(localStorage.getItem('token'));
