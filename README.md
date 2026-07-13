@@ -12,9 +12,8 @@ sudo bash start.sh
 sudo bash start.sh
 ```
 
-
 ## Maintainers
-Maintained by the KSF Cybersecurity Initative, a project of LVMLabs, by the following contributors:
+Maintained by the KSF Cybersecurity Initative, a project of LVMLabs, by the following contributors:  
 `@ko6lvm`  
 `@inkboym`  
 `@eicv-dev`  

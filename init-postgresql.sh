@@ -29,6 +29,7 @@ sudo -u postgres psql -c "CREATE USER cordis_user WITH PASSWORD 'ksfWebServices'
 
 # Grant permissions
 sudo -u postgres psql -c "GRANT ALL PRIVILEGES ON DATABASE cordis TO cordis_user;"
+sudo -u postgres psql -d cordis -c "GRANT ALL ON SCHEMA public TO cordis_user;"
 
 echo "=========================================="
 echo "PostgreSQL initialization completed!"
