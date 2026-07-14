@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
-import { Compass, Plus, Hash, LogOut, Send, Loader2, Settings, Users, Home, MessageSquare, Check, X, AlertTriangle, Pencil, Trash2, Reply, File as FileIcon, UploadCloud, Download, Hammer } from 'lucide-react';
+import { Compass, Plus, Hash, LogOut, Send, Loader2, Settings, Users, Home, MessageSquare, Check, X, AlertTriangle, Pencil, Trash2, Reply, File as FileIcon, UploadCloud, Download, Hammer, Play, Pause } from 'lucide-react';
 import { useDropzone } from 'react-dropzone';
 
 const API_BASE = import.meta.env.VITE_API_BASE || (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1' ? "http://127.0.0.1:8000" : "");
@@ -97,6 +97,104 @@ const MessageEmbed = ({ embed, onImageLoad }: { embed: any, onImageLoad?: () => 
   );
 };
 
+const formatAudioTime = (secs: number) => {
+  if (!isFinite(secs) || secs < 0) return '0:00';
+  const m = Math.floor(secs / 60);
+  const s = Math.floor(secs % 60);
+  return `${m}:${s.toString().padStart(2, '0')}`;
+};
+
+const AudioAttachment = ({ url, filename, onLoad }: { url: string, filename: string, onLoad?: () => void }) => {
+  const fullUrl = getFullUrl(url);
+  const audioRef = useRef<HTMLAudioElement>(null);
+  const [playing, setPlaying] = useState(false);
+  const [duration, setDuration] = useState(0);
+  const [currentTime, setCurrentTime] = useState(0);
+
+  useEffect(() => {
+    const audio = audioRef.current;
+    if (!audio) return;
+    const updateTime = () => setCurrentTime(audio.currentTime);
+    const updateDuration = () => { setDuration(audio.duration || 0); onLoad?.(); };
+    const handleEnded = () => { setPlaying(false); setCurrentTime(0); };
+    audio.addEventListener('timeupdate', updateTime);
+    audio.addEventListener('loadedmetadata', updateDuration);
+    audio.addEventListener('ended', handleEnded);
+    return () => {
+      audio.removeEventListener('timeupdate', updateTime);
+      audio.removeEventListener('loadedmetadata', updateDuration);
+      audio.removeEventListener('ended', handleEnded);
+    };
+  }, []);
+
+  const togglePlay = () => {
+    const audio = audioRef.current;
+    if (!audio) return;
+    if (playing) audio.pause(); else audio.play();
+    setPlaying(!playing);
+  };
+
+  const handleSeek = (e: React.MouseEvent<HTMLDivElement>) => {
+    const audio = audioRef.current;
+    if (!audio || !duration) return;
+    const rect = e.currentTarget.getBoundingClientRect();
+    const pct = Math.min(1, Math.max(0, (e.clientX - rect.left) / rect.width));
+    audio.currentTime = pct * duration;
+    setCurrentTime(audio.currentTime);
+  };
+
+  const progress = duration ? (currentTime / duration) * 100 : 0;
+
+  return (
+    <div className="msg-attachment audio-attachment" style={{
+      marginTop: '8px',
+      padding: '12px',
+      backgroundColor: 'var(--bg-panel)',
+      borderRadius: '8px',
+      border: '1px solid var(--border-subtle)',
+      display: 'flex',
+      alignItems: 'center',
+      gap: '12px',
+      maxWidth: '400px'
+    }}>
+      <audio ref={audioRef} src={fullUrl} preload="metadata" style={{ display: 'none' }} />
+      <button
+        type="button"
+        onClick={togglePlay}
+        title={playing ? 'Pause' : 'Play'}
+        style={{
+          flexShrink: 0,
+          width: '36px',
+          height: '36px',
+          borderRadius: '50%',
+          border: 'none',
+          backgroundColor: 'var(--brand-primary)',
+          color: '#fff',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          cursor: 'pointer'
+        }}
+      >
+        {playing ? <Pause size={16} fill="currentColor" /> : <Play size={16} fill="currentColor" style={{ marginLeft: '2px' }} />}
+      </button>
+      <div style={{ display: 'flex', flexDirection: 'column', flexGrow: 1, minWidth: 0, gap: '4px' }}>
+        <span style={{ fontSize: '13px', fontWeight: 500, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={filename}>{filename}</span>
+        <div
+          onClick={handleSeek}
+          style={{ position: 'relative', height: '6px', borderRadius: '3px', backgroundColor: 'var(--bg-dark)', cursor: 'pointer' }}
+        >
+          <div style={{ position: 'absolute', top: 0, left: 0, height: '100%', width: `${progress}%`, borderRadius: '3px', backgroundColor: 'var(--brand-primary)' }} />
+        </div>
+      </div>
+      <span style={{ fontSize: '11px', color: 'var(--text-muted)', flexShrink: 0 }}>{formatAudioTime(currentTime)} / {formatAudioTime(duration)}</span>
+      <a href={fullUrl} download={filename} target="_blank" rel="noopener noreferrer" className="icon-btn" style={{ padding: '4px', flexShrink: 0 }} title="Download">
+        <Download size={16} />
+      </a>
+    </div>
+  );
+};
+
 const MessageAttachment = ({ url, onLoad }: { url: string, onLoad?: () => void }) => {
   const fullUrl = getFullUrl(url);
   const parts = url.split('/');
@@ -109,6 +207,11 @@ const MessageAttachment = ({ url, onLoad }: { url: string, onLoad?: () => void }
   const ext = filename.split('.').pop()?.toLowerCase() || '';
   const isVideo = ['mp4', 'webm', 'ogg', 'mov'].includes(ext);
   const isImage = ['jpg', 'jpeg', 'png', 'gif', 'webp', 'avif'].includes(ext);
+  const isAudio = ['mp3', 'wav', 'flac', 'm4a', 'aac', 'opus'].includes(ext);
+
+  if (isAudio) {
+    return <AudioAttachment url={url} filename={filename} onLoad={onLoad} />;
+  }
 
   if (isImage) {
     return (
