@@ -7,8 +7,10 @@ from typing import List, Optional
 # 1. EMBED & REACTION SUB-SCHEMAS (Nested Data)
 # ==========================================
 class Embed(BaseModel):
-    title: str
-    text: str
+    title: Optional[str] = None
+    description: Optional[str] = None
+    url: Optional[str] = None
+    image: Optional[str] = None
 
 class MessageContent(BaseModel):
     text: str

@@ -345,3 +345,22 @@ Builds frontend assets and handles backend uvicorn service execution:
 3.  **Compiles Frontend**: Runs `npm run build` inside `frontend/` to output HTML/JS/CSS assets to `frontend/dist/`. The backend FastAPI app mounts this directory to serve it statically.
 4.  **Port Verification**: Searches if another process is listening on port 8000 using `lsof`.
 5.  **Execution Lifecycle**: Launches uvicorn in the background using `nohup`, logging to `app.log` and saving the running process ID to `app.pid`.
+
+---
+
+## 9. Recent Implementations & Changelog
+
+### Core Features & UI
+*   **Message Editing & Deletion:** Users can now edit their sent messages and delete them.
+*   **Message Replies:** Users can directly reply to specific messages, showing a parent message preview above the new message.
+*   **Rich Link Embeds:** Automatically fetches OpenGraph metadata (`og:title`, `og:description`, `og:image`) for shared links asynchronously and renders Discord-style embed cards. Users can wrap links in `< >` to suppress the embed generation.
+*   **Message Pings (@mentions):** Added Discord-style `@username` mentions that highlight in blue, bold the text, and allow clicking to open the mentioned user's profile popup.
+*   **System Account Integration:** Dedicated "SYSTEM" user account configuration for automated server notifications.
+*   **Image Scrolling Fixes:** Chat interface now correctly auto-scrolls to the bottom after images and rich embeds finish loading over the network.
+*   **General Server Invites:** Security and flow adjustments to disable generic server invites when not appropriate.
+
+### Infrastructure & Backend
+*   **User Last Active Tracking:** Added `last_active_at` timestamp column to the users table to track and calculate "Active Xd ago" user presence metrics.
+*   **Image Storage Engine:** Completed full Cloudflare R2 integration using `boto3` alongside an automatic local storage fallback, implementing sanitized UUID filenames for security.
+*   **Username Deduplication:** Enforced guardrails preventing duplicate username registration.
+*   **PostgreSQL Migration & VPS Deployment:** Added `init-postgresql.sh` and updated `start.sh` for seamless VPS deployment, transitioning from SQLite to PostgreSQL.

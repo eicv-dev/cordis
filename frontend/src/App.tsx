@@ -1,4 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
+import ReactMarkdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
 import { Compass, Plus, Hash, LogOut, Send, Loader2, Settings, Users, Home, MessageSquare, Check, X, AlertTriangle, Pencil, Trash2, Reply } from 'lucide-react';
 
 const API_BASE = import.meta.env.VITE_API_BASE || (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1' ? "http://127.0.0.1:8000" : "");
@@ -20,27 +22,72 @@ const formatLastActive = (lastActiveAt: number | undefined, isOnline: boolean) =
 
 const renderMessageText = (text: string | undefined, onMentionClick?: (username: string, e: React.MouseEvent) => void) => {
   if (!text) return null;
-  const parts = text.split(/(@\w+)/g);
-  return parts.map((part, i) => {
-    if (part.startsWith('@') && part.length > 1) {
-      const username = part.slice(1);
-      return (
-        <span 
-          key={i} 
-          className="mention-ping"
-          onClick={(e) => {
-            if (onMentionClick) {
-              e.stopPropagation();
-              onMentionClick(username, e);
-            }
-          }}
-        >
-          {part}
-        </span>
-      );
-    }
-    return part;
-  });
+  
+  // Pre-process text for mentions: turn @username into [@username](mention://username)
+  // We use a simple regex that only matches if not preceded by word characters
+  const processedText = text.replace(/(^|\s)@(\w+)/g, '$1[@$2](mention://$2)');
+
+  return (
+    <ReactMarkdown
+      remarkPlugins={[remarkGfm]}
+      components={{
+        p: ({ node, ...props }) => <p style={{ margin: 0, padding: 0 }} {...props} />,
+        a: ({ node, href, children, ...props }) => {
+          if (href?.startsWith('mention://')) {
+            const username = href.replace('mention://', '');
+            return (
+              <span 
+                className="mention-ping"
+                onClick={(e) => {
+                  if (onMentionClick) {
+                    e.stopPropagation();
+                    e.preventDefault();
+                    onMentionClick(username, e);
+                  }
+                }}
+              >
+                {children}
+              </span>
+            );
+          }
+          return (
+            <a 
+              href={href} 
+              target="_blank" 
+              rel="noopener noreferrer"
+              className="msg-link"
+              {...props}
+            >
+              {children}
+            </a>
+          );
+        }
+      }}
+    >
+      {processedText}
+    </ReactMarkdown>
+  );
+};
+
+const MessageEmbed = ({ embed, onImageLoad }: { embed: any, onImageLoad?: () => void }) => {
+  if (!embed || (!embed.title && !embed.description && !embed.image)) return null;
+  return (
+    <div className="msg-embed">
+      <div className="msg-embed-content">
+        {embed.title && (
+          <a href={embed.url} target="_blank" rel="noopener noreferrer" className="msg-embed-title">
+            {embed.title}
+          </a>
+        )}
+        {embed.description && (
+          <div className="msg-embed-description">{embed.description}</div>
+        )}
+      </div>
+      {embed.image && (
+        <img src={embed.image} alt="embed" className="msg-embed-thumbnail" onLoad={onImageLoad} />
+      )}
+    </div>
+  );
 };
 
 function App() {
@@ -71,7 +118,7 @@ function App() {
   const [mentionFilter, setMentionFilter] = useState('');
   const [mentionTriggerIndex, setMentionTriggerIndex] = useState(-1);
   const [activeSuggestionIndex, setActiveSuggestionIndex] = useState(0);
-  const inputRef = useRef<HTMLInputElement>(null);
+  const inputRef = useRef<HTMLTextAreaElement>(null);
   const [unreadStates, setUnreadStates] = useState<Record<number, { server_id: number | null, last_read_message_id: number, last_message_id: number, mentions_count: number }>>({});
   const activeChannelRef = useRef<any>(null);
   useEffect(() => { activeChannelRef.current = activeChannel; }, [activeChannel]);
@@ -201,8 +248,12 @@ function App() {
     }
   }, [token]);
 
-  useEffect(() => {
+  const scrollToBottom = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
+  };
+
+  useEffect(() => {
+    scrollToBottom();
   }, [messages, typingUsers]);
 
   const fetchMe = async () => {
@@ -607,6 +658,9 @@ function App() {
       reactions: []
     }));
     setChatInput('');
+    if (inputRef.current) {
+      inputRef.current.style.height = 'auto';
+    }
     setAttachmentFile(null);
     setReplyingTo(null);
     setIsSendingMessage(false);
@@ -665,29 +719,48 @@ function App() {
     }, 10);
   };
 
-  const handleKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
-    if (!showMentions) return;
-    const suggestions = getMentionSuggestions();
-    if (suggestions.length === 0) return;
+  const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    if (showMentions) {
+      const suggestions = getMentionSuggestions();
+      if (suggestions.length > 0) {
+        if (e.key === 'ArrowDown') {
+          e.preventDefault();
+          setActiveSuggestionIndex(prev => (prev + 1) % suggestions.length);
+          return;
+        } else if (e.key === 'ArrowUp') {
+          e.preventDefault();
+          setActiveSuggestionIndex(prev => (prev - 1 + suggestions.length) % suggestions.length);
+          return;
+        } else if (e.key === 'Enter') {
+          e.preventDefault();
+          insertMention(suggestions[activeSuggestionIndex].username);
+          return;
+        } else if (e.key === 'Escape') {
+          e.preventDefault();
+          setShowMentions(false);
+          return;
+        }
+      }
+    }
 
-    if (e.key === 'ArrowDown') {
+    if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
-      setActiveSuggestionIndex(prev => (prev + 1) % suggestions.length);
-    } else if (e.key === 'ArrowUp') {
-      e.preventDefault();
-      setActiveSuggestionIndex(prev => (prev - 1 + suggestions.length) % suggestions.length);
-    } else if (e.key === 'Enter') {
-      e.preventDefault();
-      insertMention(suggestions[activeSuggestionIndex].username);
-    } else if (e.key === 'Escape') {
-      e.preventDefault();
-      setShowMentions(false);
+      // Use form submit event or directly call sendMessage logic
+      // Since sendMessage takes a React.FormEvent, we'll fake it or use a separate submit trigger
+      // The easiest way is to click the hidden submit button, or dispatch an event, 
+      // but since we have `chatInput` in state, we can just call the submit logic.
+      const formEvent = e as unknown as React.FormEvent;
+      sendMessage(formEvent);
     }
   };
 
-  const handleTyping = (e: React.ChangeEvent<HTMLInputElement>) => {
+  const handleTyping = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
     const value = e.target.value;
     setChatInput(value);
+    
+    // Auto-resize
+    e.target.style.height = 'auto';
+    e.target.style.height = Math.min(e.target.scrollHeight, 200) + 'px';
     
     if (ws && user) {
       if (!typingTimeoutRef.current) {
@@ -1448,7 +1521,11 @@ function App() {
                       <textarea
                         className="msg-edit-input"
                         value={editContent}
-                        onChange={(e) => setEditContent(e.target.value)}
+                        onChange={(e) => {
+                          setEditContent(e.target.value);
+                          e.target.style.height = 'auto';
+                          e.target.style.height = Math.min(e.target.scrollHeight, 200) + 'px';
+                        }}
                         onKeyDown={(e) => {
                           if (e.key === 'Enter' && !e.shiftKey) {
                             e.preventDefault();
@@ -1485,8 +1562,11 @@ function App() {
                       </div>
                       {m.content.attachments && m.content.attachments.map((url: string, idx: number) => (
                         <div key={idx} className="msg-attachment" style={{marginTop: '8px'}}>
-                          <img src={url} alt="attachment" style={{maxWidth: '400px', maxHeight: '300px', borderRadius: '8px'}} />
+                          <img src={url} alt="attachment" style={{maxWidth: '400px', maxHeight: '300px', borderRadius: '8px'}} onLoad={scrollToBottom} />
                         </div>
+                      ))}
+                      {m.content.embeds && m.content.embeds.map((embed: any, idx: number) => (
+                        <MessageEmbed key={`embed-${idx}`} embed={embed} onImageLoad={scrollToBottom} />
                       ))}
                     </>
                   )
@@ -1557,7 +1637,7 @@ function App() {
               <Plus size={20} />
               <input type="file" style={{display: 'none'}} onChange={e => { if (e.target.files?.[0]) setAttachmentFile(e.target.files[0]); }} />
             </label>
-            <input 
+            <textarea 
               ref={inputRef}
               className="chat-input" 
               placeholder={ws ? `Message #${activeChannel?.channel_name || ''}` : 'Connecting...'} 
@@ -1565,6 +1645,7 @@ function App() {
               onChange={handleTyping}
               onKeyDown={handleKeyDown}
               disabled={!activeChannel || !ws || isSendingMessage}
+              rows={1}
             />
             <button type="submit" className="icon-btn" disabled={!activeChannel || (!chatInput.trim() && !attachmentFile) || !ws || isSendingMessage}>
               <Send size={20} />

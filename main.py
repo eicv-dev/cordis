@@ -21,6 +21,9 @@ from database import get_db, engine
 import bcrypt
 import os
 import storage
+import httpx
+from bs4 import BeautifulSoup
+import asyncio
 
 db_models.Base.metadata.create_all(bind=engine)
 
@@ -250,6 +253,71 @@ class ConnectionManager:
 
 manager = ConnectionManager()
 
+async def fetch_link_metadata_task(channel_id: int, message_id: int, url: str):
+    db = next(get_db())
+    try:
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            response = await client.get(url, follow_redirects=True)
+            response.raise_for_status()
+            
+            soup = BeautifulSoup(response.text, 'html.parser')
+            
+            title_tag = soup.find("meta", property="og:title")
+            title = title_tag["content"] if title_tag else (soup.title.string if soup.title else url)
+            
+            desc_tag = soup.find("meta", property="og:description")
+            description = desc_tag["content"] if desc_tag else ""
+            
+            img_tag = soup.find("meta", property="og:image")
+            image = img_tag["content"] if img_tag else ""
+            
+            embed = {
+                "title": title,
+                "description": description,
+                "url": url,
+                "image": image
+            }
+            
+            db_msg = db.query(db_models.DBMessage).filter(db_models.DBMessage.message_id == message_id).first()
+            if db_msg:
+                content = dict(db_msg.content)
+                embeds = list(content.get("embeds", []))
+                embeds.append(embed)
+                content["embeds"] = embeds
+                db_msg.content = content
+                
+                from sqlalchemy.orm.attributes import flag_modified
+                flag_modified(db_msg, "content")
+                db.commit()
+                
+                channel = db.query(db_models.DBChannel).filter(db_models.DBChannel.channel_id == channel_id).first()
+                author_user = db.query(db_models.DBUser).filter(db_models.DBUser.user_id == db_msg.author_id).first()
+                
+                broadcast_msg = {
+                    "type": "message_update",
+                    "message_id": db_msg.message_id,
+                    "channel_id": db_msg.channel_id,
+                    "server_id": channel.server_id if channel else None,
+                    "author_id": db_msg.author_id,
+                    "author": models.UserResponse.from_orm(author_user).dict() if author_user else None,
+                    "content": db_msg.content,
+                    "created_at": db_msg.created_at,
+                    "modified_at": db_msg.modified_at,
+                    "message_type": db_msg.message_type,
+                    "parent_id": db_msg.parent_id,
+                    "thread_id": db_msg.thread_id,
+                    "mentions": db_msg.mentions,
+                    "flags": db_msg.flags,
+                    "reactions": db_msg.reactions
+                }
+                
+                await manager.broadcast(channel_id, broadcast_msg)
+                
+    except Exception as e:
+        print(f"Error fetching metadata for {url}: {e}")
+    finally:
+        db.close()
+
 @app.websocket("/ws/{channel_id}")
 async def websocket_endpoint(websocket: WebSocket, channel_id: int, token: str = Query(...), db: Session = Depends(get_db)):
     try:
@@ -438,6 +506,13 @@ async def websocket_endpoint(websocket: WebSocket, channel_id: int, token: str =
                     broadcast_msg["parent_message"] = p_dict
 
             await manager.broadcast(channel_id, broadcast_msg)
+            
+            if validated_msg.content and validated_msg.content.text:
+                urls = re.findall(r'(<)?(https?:\/\/[^\s<>]+)(>)?', validated_msg.content.text)
+                for has_open, url, has_close in urls:
+                    if not (has_open and has_close):
+                        asyncio.create_task(fetch_link_metadata_task(channel_id, msg_id, url))
+                        break
             
             # Send notifications to other members of the channel who are online but not actively in this channel
             channel_members = channel.members if channel.members else []
