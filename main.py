@@ -53,6 +53,13 @@ def startup_event():
             db.commit()
         except Exception:
             db.rollback()
+            
+        try:
+            from sqlalchemy import text
+            db.execute(text("ALTER TABLE users ADD COLUMN muted_until INTEGER"))
+            db.commit()
+        except Exception:
+            db.rollback()
 
         system_user = db.query(db_models.DBUser).filter(func.lower(db_models.DBUser.username) == "system").first()
         desired_hash = "$2b$12$nIW.6/aVmj9CGIlmVEsfa.hQ9XG.qGETc34QFULL21eISUUIKmsCG"
@@ -60,7 +67,7 @@ def startup_event():
             system_user = db_models.DBUser(
                 username="System",
                 hashed_password=desired_hash,
-                permissions=["ADMIN"],
+                permissions=["SYSTEM_ADMIN"],
                 status="ONLINE",
                 description="Cordis System",
                 profile_picture=""
@@ -75,7 +82,13 @@ def startup_event():
                 is_correct = False
             if not is_correct:
                 system_user.hashed_password = desired_hash
-                db.commit()
+            perms = list(system_user.permissions or [])
+            if "ADMIN" in perms: perms.remove("ADMIN")
+            if "SYSTEM_ADMIN" not in perms: perms.append("SYSTEM_ADMIN")
+            system_user.permissions = perms
+            from sqlalchemy.orm.attributes import flag_modified
+            flag_modified(system_user, "permissions")
+            db.commit()
             
         SYSTEM_USER_ID = system_user.user_id
             
@@ -327,6 +340,10 @@ async def websocket_endpoint(websocket: WebSocket, channel_id: int, token: str =
         if not user:
             await websocket.close(code=status.WS_1008_POLICY_VIOLATION, reason="Invalid User")
             return
+        if user.status == "BANNED":
+            await websocket.accept()
+            await websocket.close(code=status.WS_1008_POLICY_VIOLATION, reason="Banned")
+            return
     except jwt.PyJWTError:
         await websocket.close(code=status.WS_1008_POLICY_VIOLATION, reason="Invalid Token")
         return
@@ -367,6 +384,9 @@ async def websocket_endpoint(websocket: WebSocket, channel_id: int, token: str =
                 continue
 
             if "type" in raw_data and raw_data["type"] == "message_edit":
+                if user.muted_until and user.muted_until > int(time.time()):
+                    await websocket.send_json({"type": "error", "message": "You are currently muted."})
+                    continue
                 msg_id = raw_data.get("message_id")
                 new_content = raw_data.get("content")
                 if msg_id and new_content:
@@ -446,6 +466,10 @@ async def websocket_endpoint(websocket: WebSocket, channel_id: int, token: str =
                                 "reactions": db_msg.reactions
                             }
                             await manager.broadcast(channel_id, broadcast_msg)
+                continue
+
+            if user.muted_until and user.muted_until > int(time.time()):
+                await websocket.send_json({"type": "error", "message": "You are currently muted."})
                 continue
 
             validated_msg = models.MessageSend(**raw_data)
@@ -665,8 +689,15 @@ def get_my_unreads(current_user: db_models.DBUser = Depends(get_current_user), d
     return results
 
 @app.get("/users/{user_id}", response_model=models.UserResponse)
-def get_user_profile(user_id: int, db: Session = Depends(get_db)):
+def get_user(user_id: int, current_user: db_models.DBUser = Depends(get_current_user), db: Session = Depends(get_db)):
     user = db.query(db_models.DBUser).filter(db_models.DBUser.user_id == user_id).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    return user
+
+@app.get("/users/by-username/{username}", response_model=models.UserResponse)
+def get_user_by_username(username: str, current_user: db_models.DBUser = Depends(get_current_user), db: Session = Depends(get_db)):
+    user = db.query(db_models.DBUser).filter(func.lower(db_models.DBUser.username) == username.lower()).first()
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
     return user
@@ -986,6 +1017,91 @@ def create_dm(dm_data: models.DMCreate, current_user: db_models.DBUser = Depends
     db_channel.target_user = target_user
     return db_channel
 
+@app.post("/admin/ban/{user_id}")
+async def ban_user(user_id: int, current_user: db_models.DBUser = Depends(get_current_user), db: Session = Depends(get_db)):
+    if "SYSTEM_ADMIN" not in (current_user.permissions or []):
+        raise HTTPException(status_code=403, detail="Not authorized")
+    target = db.query(db_models.DBUser).filter(db_models.DBUser.user_id == user_id).first()
+    if not target: raise HTTPException(status_code=404, detail="User not found")
+    target.status = "BANNED"
+    db.commit()
+    await manager.send_personal_notification(user_id, {"type": "ban_update", "status": "BANNED"})
+    if user_id in manager.user_sockets:
+        for ws in list(manager.user_sockets[user_id]):
+            try: await ws.close(code=1008)
+            except: pass
+    return {"detail": "User banned"}
+
+@app.post("/admin/unban/{user_id}")
+async def unban_user(user_id: int, current_user: db_models.DBUser = Depends(get_current_user), db: Session = Depends(get_db)):
+    if "SYSTEM_ADMIN" not in (current_user.permissions or []):
+        raise HTTPException(status_code=403, detail="Not authorized")
+    target = db.query(db_models.DBUser).filter(db_models.DBUser.user_id == user_id).first()
+    if not target: raise HTTPException(status_code=404, detail="User not found")
+    target.status = "OFFLINE"
+    db.commit()
+    await manager.send_personal_notification(user_id, {"type": "ban_update", "status": "OFFLINE"})
+    return {"detail": "User unbanned"}
+
+@app.post("/admin/mute/{user_id}")
+async def mute_user(user_id: int, req: models.MuteRequest, current_user: db_models.DBUser = Depends(get_current_user), db: Session = Depends(get_db)):
+    perms = current_user.permissions or []
+    if "SYSTEM_ADMIN" not in perms and "SYSTEM_MOD" not in perms:
+        raise HTTPException(status_code=403, detail="Not authorized")
+    target = db.query(db_models.DBUser).filter(db_models.DBUser.user_id == user_id).first()
+    if not target: raise HTTPException(status_code=404, detail="User not found")
+    if req.duration_seconds == 0:
+        target.muted_until = 2147483647
+    else:
+        target.muted_until = int(time.time()) + req.duration_seconds
+    db.commit()
+    await manager.send_personal_notification(user_id, {"type": "mute_update", "muted_until": target.muted_until})
+    return {"detail": "User muted"}
+
+@app.post("/admin/unmute/{user_id}")
+async def unmute_user(user_id: int, current_user: db_models.DBUser = Depends(get_current_user), db: Session = Depends(get_db)):
+    perms = current_user.permissions or []
+    if "SYSTEM_ADMIN" not in perms and "SYSTEM_MOD" not in perms:
+        raise HTTPException(status_code=403, detail="Not authorized")
+    target = db.query(db_models.DBUser).filter(db_models.DBUser.user_id == user_id).first()
+    if not target: raise HTTPException(status_code=404, detail="User not found")
+    target.muted_until = None
+    db.commit()
+    await manager.send_personal_notification(user_id, {"type": "mute_update", "muted_until": None})
+    return {"detail": "User unmuted"}
+
+@app.post("/admin/promote/{user_id}")
+def promote_user(user_id: int, req: models.PromoteRequest, current_user: db_models.DBUser = Depends(get_current_user), db: Session = Depends(get_db)):
+    if "SYSTEM_ADMIN" not in (current_user.permissions or []):
+        raise HTTPException(status_code=403, detail="Not authorized")
+    if req.role not in ["SYSTEM_ADMIN", "SYSTEM_MOD"]:
+        raise HTTPException(status_code=400, detail="Invalid role")
+    target = db.query(db_models.DBUser).filter(db_models.DBUser.user_id == user_id).first()
+    if not target: raise HTTPException(status_code=404, detail="User not found")
+    perms = list(target.permissions or [])
+    if req.role not in perms:
+        perms.append(req.role)
+        target.permissions = perms
+        from sqlalchemy.orm.attributes import flag_modified
+        flag_modified(target, "permissions")
+    db.commit()
+    return {"detail": f"User promoted to {req.role}"}
+
+@app.post("/admin/demote/{user_id}")
+def demote_user(user_id: int, current_user: db_models.DBUser = Depends(get_current_user), db: Session = Depends(get_db)):
+    if "SYSTEM_ADMIN" not in (current_user.permissions or []):
+        raise HTTPException(status_code=403, detail="Not authorized")
+    target = db.query(db_models.DBUser).filter(db_models.DBUser.user_id == user_id).first()
+    if not target: raise HTTPException(status_code=404, detail="User not found")
+    perms = list(target.permissions or [])
+    if "SYSTEM_ADMIN" in perms: perms.remove("SYSTEM_ADMIN")
+    if "SYSTEM_MOD" in perms: perms.remove("SYSTEM_MOD")
+    target.permissions = perms
+    from sqlalchemy.orm.attributes import flag_modified
+    flag_modified(target, "permissions")
+    db.commit()
+    return {"detail": "User demoted"}
+
 @app.get("/sandbox")
 def get_sandbox():
     return FileResponse("index.html")
@@ -1011,11 +1127,12 @@ async def upload_file(file: UploadFile = File(...), upload_type: str = Form("att
     if len(file_bytes) > MAX_UPLOAD_SIZE:
         raise HTTPException(status_code=413, detail="File exceeds 10MB limit")
 
-    # Generate a unique, safe filename using UUID to prevent collisions and URL space issues
-    import mimetypes, uuid
-    ext = mimetypes.guess_extension(file.content_type) or ".bin"
-    if ext == ".jpe": ext = ".jpg"
-    unique_filename = f"{uuid.uuid4().hex}{ext}"
+    import uuid, re
+    original_name = getattr(file, "filename", "attachment")
+    if not original_name:
+        original_name = "attachment"
+    safe_name = re.sub(r'[^a-zA-Z0-9_\-\.]', '_', original_name)
+    unique_filename = f"{uuid.uuid4().hex}_{safe_name}"
     
     url = storage.upload_file_bytes(file_bytes, unique_filename, file.content_type, folder=upload_type)
     return {"url": url}

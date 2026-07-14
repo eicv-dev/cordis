@@ -13,6 +13,7 @@ class DBUser(Base):
     profile_picture = Column(String)
     banner = Column(String)
     last_active_at = Column(Integer, nullable=True)
+    muted_until = Column(Integer, nullable=True)
 
 class DBServer(Base):
     __tablename__ = "servers"

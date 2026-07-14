@@ -999,3 +999,31 @@ h1, h2, h3, h4, h5, h6 {
   color: var(--text-on-brand);
 }
 
+/* Context Menu Dropdown */
+.dropdown-item {
+  width: 100%;
+  padding: 8px 12px;
+  background: transparent;
+  border: none;
+  color: var(--text-main);
+  text-align: left;
+  font-size: var(--text-sm);
+  font-weight: 500;
+  cursor: pointer;
+  border-radius: var(--radius-sm);
+  transition: var(--transition-fast);
+}
+
+.dropdown-item:hover {
+  background-color: var(--brand-primary);
+  color: var(--text-on-brand) !important;
+}
+
+.dropdown-item.danger {
+  color: #da373c;
+}
+
+.dropdown-item.danger:hover {
+  background-color: #da373c;
+  color: #ffffff !important;
+}

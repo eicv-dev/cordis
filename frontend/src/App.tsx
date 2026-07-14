@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
-import { Compass, Plus, Hash, LogOut, Send, Loader2, Settings, Users, Home, MessageSquare, Check, X, AlertTriangle, Pencil, Trash2, Reply, File as FileIcon, UploadCloud } from 'lucide-react';
+import { Compass, Plus, Hash, LogOut, Send, Loader2, Settings, Users, Home, MessageSquare, Check, X, AlertTriangle, Pencil, Trash2, Reply, File as FileIcon, UploadCloud, Download, Hammer } from 'lucide-react';
 import { useDropzone } from 'react-dropzone';
 
 const API_BASE = import.meta.env.VITE_API_BASE || (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1' ? "http://127.0.0.1:8000" : "");
@@ -97,6 +97,61 @@ const MessageEmbed = ({ embed, onImageLoad }: { embed: any, onImageLoad?: () => 
   );
 };
 
+const MessageAttachment = ({ url, onLoad }: { url: string, onLoad?: () => void }) => {
+  const fullUrl = getFullUrl(url);
+  const parts = url.split('/');
+  let filename = parts[parts.length - 1];
+  const underscoreIndex = filename.indexOf('_');
+  if (underscoreIndex !== -1 && underscoreIndex === 32) {
+    filename = filename.substring(underscoreIndex + 1);
+  }
+
+  const ext = filename.split('.').pop()?.toLowerCase() || '';
+  const isVideo = ['mp4', 'webm', 'ogg', 'mov'].includes(ext);
+  const isImage = ['jpg', 'jpeg', 'png', 'gif', 'webp', 'avif'].includes(ext);
+
+  if (isImage) {
+    return (
+      <div className="msg-attachment" style={{marginTop: '8px'}}>
+        <img src={fullUrl} alt="attachment" style={{maxWidth: '400px', maxHeight: '300px', borderRadius: '8px'}} onLoad={onLoad} />
+      </div>
+    );
+  }
+
+  if (isVideo) {
+    return (
+      <div className="msg-attachment" style={{marginTop: '8px'}}>
+        <video src={fullUrl} controls style={{maxWidth: '400px', maxHeight: '300px', borderRadius: '8px'}} onLoadedData={onLoad} />
+      </div>
+    );
+  }
+
+  return (
+    <div className="msg-attachment file-attachment" style={{
+      marginTop: '8px', 
+      padding: '12px', 
+      backgroundColor: 'var(--bg-panel)', 
+      borderRadius: '8px', 
+      border: '1px solid var(--border-subtle)', 
+      display: 'inline-flex', 
+      alignItems: 'center', 
+      gap: '12px',
+      maxWidth: '400px'
+    }}>
+      <div style={{height: '40px', width: '40px', backgroundColor: 'var(--bg-dark)', borderRadius: '4px', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0}}>
+        <FileIcon size={20} />
+      </div>
+      <div style={{display: 'flex', flexDirection: 'column', flexGrow: 1, minWidth: 0, overflow: 'hidden'}}>
+        <span style={{fontSize: '14px', fontWeight: 500, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap'}} title={filename}>{filename}</span>
+        <span style={{fontSize: '12px', color: 'var(--text-muted)'}}>Attachment</span>
+      </div>
+      <a href={fullUrl} download={filename} target="_blank" rel="noopener noreferrer" className="icon-btn" style={{padding: '8px'}} title="Download">
+        <Download size={18} />
+      </a>
+    </div>
+  );
+};
+
 function App() {
   const [token, setToken] = useState<string | null>(localStorage.getItem('token'));
   const [user, setUser] = useState<any>(null);
@@ -185,6 +240,12 @@ function App() {
   const [settingsProfilePicFile, setSettingsProfilePicFile] = useState<File | null>(null);
   const [settingsBannerFile, setSettingsBannerFile] = useState<File | null>(null);
 
+  const [showAdminPanel, setShowAdminPanel] = useState(false);
+  const [adminSearchUser, setAdminSearchUser] = useState('');
+  const [adminUserResult, setAdminUserResult] = useState<any>(null);
+  const [adminLoading, setAdminLoading] = useState(false);
+  const [adminMessage, setAdminMessage] = useState('');
+
   const [showServerSettings, setShowServerSettings] = useState(false);
   const [isSavingServer, setIsSavingServer] = useState(false);
   const [serverName, setServerName] = useState('');
@@ -255,6 +316,7 @@ function App() {
     return userId ? !!onlineUsers[userId] : false;
   };
   const [selectedProfile, setSelectedProfile] = useState<{user: any, rect: DOMRect} | null>(null);
+  const [contextMenu, setContextMenu] = useState<{x: number, y: number, user: any} | null>(null);
 
   const currentUserRef = useRef<any>(null);
   useEffect(() => {
@@ -513,6 +575,16 @@ function App() {
           ...prev,
           [data.user_id]: data.status === 'online'
         }));
+      } else if (data.type === 'error') {
+        alert(data.message);
+      } else if (data.type === 'mute_update') {
+        if (currentUserRef.current) {
+          setUser({ ...currentUserRef.current, muted_until: data.muted_until });
+        }
+      } else if (data.type === 'ban_update') {
+        if (currentUserRef.current) {
+          setUser({ ...currentUserRef.current, status: data.status });
+        }
       } else if (data.type === 'unread_notification') {
         setUnreadStates(prev => {
           const next = { ...prev };
@@ -955,6 +1027,59 @@ function App() {
     throw new Error("Upload failed");
   };
 
+  const doAdminSearch = async (usernameToSearch: string) => {
+    setAdminLoading(true);
+    setAdminMessage('');
+    try {
+      const res = await fetch(`${API_BASE}/users/by-username/${usernameToSearch}`, {
+        headers: { 'Authorization': `Bearer ${token}` }
+      });
+      if (!res.ok) throw new Error('User not found');
+      const data = await res.json();
+      setAdminUserResult(data);
+    } catch (err: any) {
+      setAdminMessage(err.message);
+      setAdminUserResult(null);
+    } finally {
+      setAdminLoading(false);
+    }
+  };
+
+  const handleAdminSearch = async (e: React.FormEvent) => {
+    e.preventDefault();
+    await doAdminSearch(adminSearchUser);
+  };
+
+  const handleAdminAction = async (action: string, userId: number, payload?: any) => {
+    setAdminLoading(true);
+    setAdminMessage('');
+    try {
+      const res = await fetch(`/admin/${action}/${userId}`, {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${token}`,
+          'Content-Type': 'application/json'
+        },
+        body: payload ? JSON.stringify(payload) : undefined
+      });
+      if (!res.ok) {
+        const d = await res.json();
+        throw new Error(d.detail || 'Action failed');
+      }
+      setAdminMessage(`Action ${action} successful`);
+      if (adminUserResult && adminUserResult.user_id === userId) {
+        const uRes = await fetch(`/users/${userId}`, {
+          headers: { 'Authorization': `Bearer ${token}` }
+        });
+        if (uRes.ok) setAdminUserResult(await uRes.json());
+      }
+    } catch (err: any) {
+      setAdminMessage(err.message);
+    } finally {
+      setAdminLoading(false);
+    }
+  };
+
   const saveSettings = async (e: React.FormEvent) => {
     e.preventDefault();
     setIsSavingSettings(true);
@@ -1116,6 +1241,28 @@ function App() {
     return u?.username ? u.username.charAt(0).toUpperCase() : 'U';
   };
 
+  const renderUsernameWithBadges = (u: any) => {
+    if (!u) return 'Unknown';
+    const isAdmin = u.permissions?.includes('SYSTEM_ADMIN');
+    const isMod = !isAdmin && u.permissions?.includes('SYSTEM_MOD');
+    
+    return (
+      <span style={{display: 'inline-flex', alignItems: 'center'}}>
+        {u.username}
+        {isAdmin && (
+          <span style={{display: 'inline-flex', alignItems: 'center', gap: '2px', backgroundColor: 'var(--brand-primary)', color: 'white', padding: '1px 4px', borderRadius: '4px', fontSize: '10px', fontWeight: 'bold', marginLeft: '6px', verticalAlign: 'middle', height: '16px'}}>
+            <Hammer size={10} /> ADMIN
+          </span>
+        )}
+        {isMod && (
+          <span style={{display: 'inline-flex', alignItems: 'center', gap: '2px', backgroundColor: '#23a559', color: 'white', padding: '1px 4px', borderRadius: '4px', fontSize: '10px', fontWeight: 'bold', marginLeft: '6px', verticalAlign: 'middle', height: '16px'}}>
+            <Hammer size={10} /> MOD
+          </span>
+        )}
+      </span>
+    );
+  };
+
   const getServerIconContent = (s: any) => {
     if (s?.server_image) {
       return <img src={getFullUrl(s.server_image)} alt="icon" style={{width: '100%', height: '100%', borderRadius: 'inherit', objectFit: 'cover'}} />;
@@ -1214,6 +1361,17 @@ function App() {
     );
   };
 
+  if (user && user.status === 'BANNED') {
+    return (
+      <div style={{display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', height: '100vh', width: '100vw', position: 'fixed', top: 0, left: 0, zIndex: 9999, backgroundColor: 'var(--bg-main)', color: 'white'}}>
+        <AlertTriangle size={64} color="var(--color-danger)" style={{marginBottom: '24px'}} />
+        <h1 style={{fontSize: '32px', marginBottom: '16px'}}>Account Suspended</h1>
+        <p style={{fontSize: '18px', color: 'var(--text-muted)', marginBottom: '24px'}}>Your account has been permanently banned from Cordis.</p>
+        <button className="btn btn-secondary" onClick={() => { localStorage.removeItem('cordis_token'); setToken(''); setUser(null); }}>Log Out</button>
+      </div>
+    );
+  }
+
   if (!token) {
     return (
       <div className="auth-container">
@@ -1300,6 +1458,8 @@ function App() {
     }
   });
 
+  const isMuted = user && user.muted_until && (user.muted_until * 1000) > Date.now();
+
   return (
     <div 
       {...getRootProps()}
@@ -1333,6 +1493,15 @@ function App() {
           {serverMentionCount[0] > 0 && <div className="mention-badge">{serverMentionCount[0]}</div>}
         </div>
         <div className="server-separator" />
+        {(user?.permissions?.includes('SYSTEM_ADMIN') || user?.permissions?.includes('SYSTEM_MOD')) && (
+          <>
+            <div className={`server-icon ${showAdminPanel ? 'active' : ''}`} onClick={() => setShowAdminPanel(true)} data-tooltip="Administration">
+              {showAdminPanel && <div className="active-pill" />}
+              <Hammer size={24} color={showAdminPanel ? '#fff' : 'var(--text-main)'} />
+            </div>
+            <div className="server-separator" />
+          </>
+        )}
         
         {isLoadingServers ? (
           <>
@@ -1475,7 +1644,7 @@ function App() {
               <div className="status-indicator status-online"></div>
             </div>
             <div className="user-info">
-              <div className="user-name">{user.username}</div>
+              <div className="user-name">{renderUsernameWithBadges(user)}</div>
               <div className="user-status-text">Online</div>
             </div>
             <div className="user-actions">
@@ -1493,7 +1662,7 @@ function App() {
             {isViewingDMs ? (
               <>
                 <MessageSquare size={24} style={{color: 'var(--text-muted)'}} />
-                <div className="chat-title">{activeChannel?.target_user?.username || 'Select a user'}</div>
+                <div className="chat-title">{renderUsernameWithBadges(activeChannel?.target_user)}</div>
               </>
             ) : (
               <>
@@ -1537,7 +1706,7 @@ function App() {
                   <div className="msg-avatar" style={{width: '16px', height: '16px', minWidth: '16px', fontSize: '8px'}}>
                     {getAvatarContent(m.parent_message.author)}
                   </div>
-                  <span style={{fontWeight: 500}}>{m.parent_message.author?.username || 'Unknown'}</span>
+                  <span style={{fontWeight: 500}}>{renderUsernameWithBadges(m.parent_message.author)}</span>
                   <span style={{whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: '400px'}}>{m.parent_message.content?.text || 'Attachment'}</span>
                 </div>
               )}
@@ -1547,6 +1716,11 @@ function App() {
                 onClick={(e) => {
                   e.stopPropagation();
                   setSelectedProfile({ user: m.author, rect: e.currentTarget.getBoundingClientRect() });
+                }}
+                onContextMenu={(e) => {
+                  e.preventDefault();
+                  e.stopPropagation();
+                  setContextMenu({x: e.pageX, y: e.pageY, user: m.author});
                 }}
                 style={{cursor: 'pointer'}}
               >
@@ -1560,9 +1734,14 @@ function App() {
                       e.stopPropagation();
                       setSelectedProfile({ user: m.author, rect: e.currentTarget.getBoundingClientRect() });
                     }}
+                    onContextMenu={(e) => {
+                      e.preventDefault();
+                      e.stopPropagation();
+                      setContextMenu({x: e.pageX, y: e.pageY, user: m.author});
+                    }}
                     style={{cursor: 'pointer'}}
                   >
-                    {m.author?.username || `User ${m.author_id}`}
+                    {renderUsernameWithBadges(m.author)}
                   </span>
                   <span className="msg-time">
                     {new Date(m.created_at * 1000).toLocaleString()}
@@ -1592,6 +1771,7 @@ function App() {
                           }
                         }}
                         autoFocus
+                        disabled={isMuted}
                         onFocus={(e) => {
                           const val = e.currentTarget.value;
                           e.currentTarget.setSelectionRange(val.length, val.length);
@@ -1618,9 +1798,7 @@ function App() {
                         })}
                       </div>
                       {m.content.attachments && m.content.attachments.map((url: string, idx: number) => (
-                        <div key={idx} className="msg-attachment" style={{marginTop: '8px'}}>
-                          <img src={getFullUrl(url)} alt="attachment" style={{maxWidth: '400px', maxHeight: '300px', borderRadius: '8px'}} onLoad={scrollToBottom} />
-                        </div>
+                        <MessageAttachment key={idx} url={url} onLoad={scrollToBottom} />
                       ))}
                       {m.content.embeds && m.content.embeds.map((embed: any, idx: number) => (
                         <MessageEmbed key={`embed-${idx}`} embed={embed} onImageLoad={scrollToBottom} />
@@ -1715,11 +1893,11 @@ function App() {
             <textarea 
               ref={inputRef}
               className="chat-input" 
-              placeholder={ws ? `Message #${activeChannel?.channel_name || ''}` : 'Connecting...'} 
+              placeholder={isMuted ? 'You are currently muted.' : (ws ? `Message #${activeChannel?.channel_name || ''}` : 'Connecting...')} 
               value={chatInput}
               onChange={handleTyping}
               onKeyDown={handleKeyDown}
-              disabled={!activeChannel || !ws || isSendingMessage}
+              disabled={isMuted || !activeChannel || !ws || isSendingMessage}
               rows={1}
             />
             <button type="submit" className="icon-btn" disabled={!activeChannel || (!chatInput.trim() && !attachmentFile) || !ws || isSendingMessage}>
@@ -1741,12 +1919,17 @@ function App() {
                   e.stopPropagation();
                   setSelectedProfile({ user: activeChannel.target_user, rect: e.currentTarget.getBoundingClientRect() });
                 }}
+                onContextMenu={(e) => {
+                  e.preventDefault();
+                  e.stopPropagation();
+                  setContextMenu({x: e.pageX, y: e.pageY, user: activeChannel.target_user});
+                }}
               >
                 <div className="user-avatar member-avatar">
                   {getAvatarContent(activeChannel.target_user)}
                   <div className={`status-indicator ${isUserOnline(activeChannel.target_user?.user_id, activeChannel.target_user?.username) ? 'online' : 'offline'}`}></div>
                 </div>
-                <span className="member-name">{activeChannel.target_user?.username}</span>
+                <span className="member-name">{renderUsernameWithBadges(activeChannel.target_user)}</span>
               </div>
               
               <div 
@@ -1755,12 +1938,17 @@ function App() {
                   e.stopPropagation();
                   setSelectedProfile({ user: user, rect: e.currentTarget.getBoundingClientRect() });
                 }}
+                onContextMenu={(e) => {
+                  e.preventDefault();
+                  e.stopPropagation();
+                  setContextMenu({x: e.pageX, y: e.pageY, user: user});
+                }}
               >
                 <div className="user-avatar member-avatar">
                   {getAvatarContent(user)}
                   <div className="status-indicator online"></div>
                 </div>
-                <span className="member-name">{user.username}</span>
+                <span className="member-name">{renderUsernameWithBadges(user)}</span>
               </div>
             </>
           ) : (
@@ -1774,12 +1962,17 @@ function App() {
                     e.stopPropagation();
                     setSelectedProfile({ user: m, rect: e.currentTarget.getBoundingClientRect() });
                   }}
+                  onContextMenu={(e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    setContextMenu({x: e.pageX, y: e.pageY, user: m});
+                  }}
                 >
                   <div className="user-avatar member-avatar">
                     {getAvatarContent(m)}
                     <div className="status-indicator online"></div>
                   </div>
-                  <span className="member-name">{m.username}</span>
+                  <span className="member-name">{renderUsernameWithBadges(m)}</span>
                 </div>
               ))}
 
@@ -1792,12 +1985,17 @@ function App() {
                     e.stopPropagation();
                     setSelectedProfile({ user: m, rect: e.currentTarget.getBoundingClientRect() });
                   }}
+                  onContextMenu={(e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    setContextMenu({x: e.pageX, y: e.pageY, user: m});
+                  }}
                 >
                   <div className="user-avatar member-avatar">
                     {getAvatarContent(m)}
                     <div className="status-indicator offline"></div>
                   </div>
-                  <span className="member-name">{m.username}</span>
+                  <span className="member-name">{renderUsernameWithBadges(m)}</span>
                 </div>
               ))}
             </>
@@ -1820,7 +2018,7 @@ function App() {
             </div>
           </div>
           <div className="popover-body">
-            <h3 className="popover-username">{selectedProfile.user.username}</h3>
+            <h3 className="popover-username" style={{margin: 0}}>{renderUsernameWithBadges(selectedProfile.user)}</h3>
             {selectedProfile.user.description && (
               <div className="popover-description">
                 <div className="desc-title">ABOUT ME</div>
@@ -1844,6 +2042,47 @@ function App() {
             )}
           </div>
         </div>
+      )}
+
+      {/* Context Menu */}
+      {contextMenu && (
+        <>
+          <div style={{position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, zIndex: 99999}} onClick={() => setContextMenu(null)} onContextMenu={(e) => { e.preventDefault(); setContextMenu(null); }}></div>
+          <div style={{position: 'fixed', top: Math.min(contextMenu.y, window.innerHeight - 150), left: Math.min(contextMenu.x, window.innerWidth - 180), zIndex: 100000, backgroundColor: 'var(--bg-card)', borderRadius: '8px', padding: '8px', boxShadow: 'var(--shadow-lift)', minWidth: '150px', border: '1px solid var(--border-subtle)'}}>
+            <div style={{padding: '4px 8px', fontSize: '13px', fontWeight: 600, color: 'var(--text-muted)', borderBottom: '1px solid var(--border-subtle)', marginBottom: '4px'}}>{renderUsernameWithBadges(contextMenu.user)}</div>
+            {contextMenu.user && user && contextMenu.user.user_id !== user.user_id && (
+              <button className="dropdown-item" onClick={() => { startDM(contextMenu.user.user_id); setContextMenu(null); }}>Message</button>
+            )}
+            
+            {/* System Actions */}
+            {contextMenu.user && user && contextMenu.user.user_id !== user.user_id && (user.permissions?.includes('SYSTEM_ADMIN') || user.permissions?.includes('SYSTEM_MOD')) && (
+              <>
+                <button className="dropdown-item" onClick={() => { 
+                  setShowAdminPanel(true);
+                  setAdminSearchUser(contextMenu.user.username);
+                  doAdminSearch(contextMenu.user.username);
+                  setContextMenu(null);
+                }}>Show in Mod Panel</button>
+                
+                {contextMenu.user.status === 'BANNED' ? (
+                  <div className="dropdown-item danger" style={{cursor: 'default', opacity: 0.8, backgroundColor: 'transparent'}}>Banned</div>
+                ) : (
+                  <>
+                    {(contextMenu.user.muted_until && contextMenu.user.muted_until * 1000 > Date.now()) ? (
+                      <div className="dropdown-item danger" style={{cursor: 'default', opacity: 0.8, backgroundColor: 'transparent'}}>Muted</div>
+                    ) : (
+                      <button className="dropdown-item danger" onClick={() => { handleAdminAction('mute', contextMenu.user.user_id, {duration_seconds: 3600}); setContextMenu(null); }}>SYSTEM Mute (1h)</button>
+                    )}
+                    
+                    {user.permissions?.includes('SYSTEM_ADMIN') && (
+                      <button className="dropdown-item danger" onClick={() => { handleAdminAction('ban', contextMenu.user.user_id); setContextMenu(null); }}>SYSTEM Ban</button>
+                    )}
+                  </>
+                )}
+              </>
+            )}
+          </div>
+        </>
       )}
 
       {/* Create Server Modal */}
@@ -1956,6 +2195,7 @@ function App() {
               <div className="modal-title">My Account</div>
               <div className="modal-desc">Update your profile settings</div>
             </div>
+            
             <form onSubmit={saveSettings}>
               <div className="modal-body" style={{display: 'flex', flexDirection: 'column', alignItems: 'center'}}>
                 
@@ -2008,6 +2248,51 @@ function App() {
                 </button>
               </div>
             </form>
+          </div>
+        </div>
+      )}
+
+      {/* Admin Panel Modal */}
+      {showAdminPanel && (
+        <div className="modal-overlay" onClick={(e) => { if (e.target === e.currentTarget) setShowAdminPanel(false); }}>
+          <div className="modal-content" style={{maxWidth: '500px'}}>
+            <div className="modal-header">
+              <div className="modal-title">System Administration</div>
+              <div className="modal-desc">Manage system-wide moderation</div>
+            </div>
+            <div className="modal-body">
+              <form onSubmit={handleAdminSearch} style={{display: 'flex', gap: '8px', marginBottom: '16px'}}>
+                <input className="input" placeholder="Search by username..." value={adminSearchUser} onChange={e => setAdminSearchUser(e.target.value)} />
+                <button type="submit" className="btn" disabled={adminLoading}>Search</button>
+              </form>
+              {adminMessage && <div style={{color: 'var(--brand-primary)', marginBottom: '16px'}}>{adminMessage}</div>}
+              {adminUserResult && (
+                <div style={{backgroundColor: 'var(--bg-secondary)', padding: '16px', borderRadius: '8px'}}>
+                  <div style={{fontWeight: 'bold', marginBottom: '8px'}}>{adminUserResult.username} (ID: {adminUserResult.user_id})</div>
+                  <div>Status: {adminUserResult.status}</div>
+                  <div>Roles: {adminUserResult.permissions?.join(', ') || 'None'}</div>
+                  {adminUserResult.muted_until && <div>Muted Until: {new Date(adminUserResult.muted_until * 1000).toLocaleString()}</div>}
+                  
+                  <div style={{display: 'flex', gap: '8px', flexWrap: 'wrap', marginTop: '16px'}}>
+                    {user?.permissions?.includes('SYSTEM_ADMIN') && (
+                      <>
+                        <button type="button" className="btn btn-secondary" onClick={() => handleAdminAction(adminUserResult.status === 'BANNED' ? 'unban' : 'ban', adminUserResult.user_id)}>{adminUserResult.status === 'BANNED' ? 'Unban' : 'Ban'}</button>
+                        <button type="button" className="btn btn-secondary" onClick={() => handleAdminAction('promote', adminUserResult.user_id, {role: 'SYSTEM_MOD'})}>Make Mod</button>
+                        <button type="button" className="btn btn-secondary" onClick={() => handleAdminAction('promote', adminUserResult.user_id, {role: 'SYSTEM_ADMIN'})}>Make Admin</button>
+                        <button type="button" className="btn btn-secondary" onClick={() => handleAdminAction('demote', adminUserResult.user_id)}>Demote</button>
+                      </>
+                    )}
+                    {(user?.permissions?.includes('SYSTEM_ADMIN') || user?.permissions?.includes('SYSTEM_MOD')) && (
+                      <>
+                        <button type="button" className="btn btn-secondary" onClick={() => handleAdminAction('mute', adminUserResult.user_id, {duration_seconds: 3600})}>Mute (1h)</button>
+                        <button type="button" className="btn btn-secondary" onClick={() => handleAdminAction('mute', adminUserResult.user_id, {duration_seconds: 0})}>Mute (Indefinite)</button>
+                        <button type="button" className="btn btn-secondary" onClick={() => handleAdminAction('unmute', adminUserResult.user_id)}>Unmute</button>
+                      </>
+                    )}
+                  </div>
+                </div>
+              )}
+            </div>
           </div>
         </div>
       )}

@@ -50,6 +50,7 @@ class UserResponse(BaseModel):
     profile_picture: Optional[str] = None
     banner: Optional[str] = None
     last_active_at: Optional[int] = None
+    muted_until: Optional[int] = None
 
     @model_validator(mode="after")
     def set_system_active(self) -> "UserResponse":
@@ -172,4 +173,14 @@ class UnreadState(BaseModel):
     server_id: Optional[int] = None
     last_read_message_id: int
     last_message_id: int
-    mentions_count: int
+    mentions_count: int
+
+# ==========================================
+# 6. ADMIN SCHEMAS
+# ==========================================
+class MuteRequest(BaseModel):
+    duration_seconds: int = 0
+
+class PromoteRequest(BaseModel):
+    role: str
+
