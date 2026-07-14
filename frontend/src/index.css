@@ -960,9 +960,9 @@ h1, h2, h3, h4, h5, h6 {
 .message.mentioned {
   background-color: rgba(250, 166, 26, 0.1);
   border-left: 2px solid #faa61a;
-  padding: 2px 16px;
-  margin-left: -16px; /* Offset padding to keep alignment */
-  width: calc(100% + 32px);
+  padding: 2px 16px 2px 14px;
+  margin-left: -16px;
+  margin-right: -16px;
 }
 
 .mention-suggestions-popup {

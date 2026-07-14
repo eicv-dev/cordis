@@ -23,9 +23,9 @@ const formatLastActive = (lastActiveAt: number | undefined, isOnline: boolean) =
 const renderMessageText = (text: string | undefined, onMentionClick?: (username: string, e: React.MouseEvent) => void) => {
   if (!text) return null;
   
-  // Pre-process text for mentions: turn @username into [@username](mention://username)
+  // Pre-process text for mentions: turn @username into [@username](https://mention.local/username)
   // We use a simple regex that only matches if not preceded by word characters
-  const processedText = text.replace(/(^|\s)@(\w+)/g, '$1[@$2](mention://$2)');
+  const processedText = text.replace(/(^|\s)@(\w+)/g, '$1[@$2](https://mention.local/$2)');
 
   return (
     <ReactMarkdown
@@ -33,8 +33,8 @@ const renderMessageText = (text: string | undefined, onMentionClick?: (username:
       components={{
         p: ({ node, ...props }) => <p style={{ margin: 0, padding: 0 }} {...props} />,
         a: ({ node, href, children, ...props }) => {
-          if (href?.startsWith('mention://')) {
-            const username = href.replace('mention://', '');
+          if (href?.startsWith('https://mention.local/')) {
+            const username = href.replace('https://mention.local/', '');
             return (
               <span 
                 className="mention-ping"
