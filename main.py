@@ -1003,10 +1003,14 @@ async def custom_http_exception_handler(request, exc):
 if os.path.exists("frontend/dist"):
     pass # we will mount it later
 
+MAX_UPLOAD_SIZE = 10 * 1024 * 1024  # 10MB
+
 @app.post("/api/upload")
 async def upload_file(file: UploadFile = File(...), upload_type: str = Form("attachments"), current_user: db_models.DBUser = Depends(get_current_user)):
     file_bytes = await file.read()
-    
+    if len(file_bytes) > MAX_UPLOAD_SIZE:
+        raise HTTPException(status_code=413, detail="File exceeds 10MB limit")
+
     # Generate a unique, safe filename using UUID to prevent collisions and URL space issues
     import mimetypes, uuid
     ext = mimetypes.guess_extension(file.content_type) or ".bin"
