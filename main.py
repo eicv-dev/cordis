@@ -387,66 +387,142 @@ class ConnectionManager:
 
 manager = ConnectionManager()
 
+def extract_youtube_video_id(url: str) -> Optional[str]:
+    if not url:
+        return None
+    cleaned = url.strip().rstrip(").,;]!>'\"")
+    patterns = [
+        r'(?:youtube\.com/watch\?(?:[^#\s]*&)?v=|youtube\.com/embed/|youtube\.com/v/|youtube\.com/shorts/|youtu\.be/)([A-Za-z0-9_-]{11})',
+        r'youtube\.com/live/([A-Za-z0-9_-]{11})',
+    ]
+    for pattern in patterns:
+        match = re.search(pattern, cleaned, re.IGNORECASE)
+        if match:
+            return match.group(1)
+    return None
+
+
+async def fetch_youtube_embed(client: httpx.AsyncClient, url: str, video_id: str) -> dict:
+    watch_url = f"https://www.youtube.com/watch?v={video_id}"
+    title = "YouTube"
+    description = ""
+    image = f"https://i.ytimg.com/vi/{video_id}/hqdefault.jpg"
+    author = ""
+
+    try:
+        oembed_url = f"https://www.youtube.com/oembed?url={watch_url}&format=json"
+        resp = await client.get(oembed_url, timeout=5.0)
+        if resp.status_code == 200:
+            data = resp.json()
+            title = data.get("title") or title
+            author = data.get("author_name") or ""
+            if data.get("thumbnail_url"):
+                image = data["thumbnail_url"]
+            if author:
+                description = f"YouTube · {author}"
+            else:
+                description = "YouTube"
+    except Exception:
+        description = "YouTube"
+
+    for quality in ("maxresdefault", "sddefault", "hqdefault"):
+        candidate = f"https://i.ytimg.com/vi/{video_id}/{quality}.jpg"
+        try:
+            head = await client.head(candidate, timeout=3.0, follow_redirects=True)
+            if head.status_code == 200 and int(head.headers.get("content-length", "1")) > 2000:
+                image = candidate
+                break
+        except Exception:
+            continue
+
+    return {
+        "title": title,
+        "description": description,
+        "url": watch_url,
+        "image": image,
+        "type": "youtube",
+        "video_id": video_id,
+        "provider": "YouTube",
+    }
+
+
 async def fetch_link_metadata_task(channel_id: int, message_id: int, url: str):
     db = next(get_db())
     try:
-        async with httpx.AsyncClient(timeout=5.0) as client:
-            response = await client.get(url, follow_redirects=True)
-            response.raise_for_status()
-            
-            soup = BeautifulSoup(response.text, 'html.parser')
-            
-            title_tag = soup.find("meta", property="og:title")
-            title = title_tag["content"] if title_tag else (soup.title.string if soup.title else url)
-            
-            desc_tag = soup.find("meta", property="og:description")
-            description = desc_tag["content"] if desc_tag else ""
-            
-            img_tag = soup.find("meta", property="og:image")
-            image = img_tag["content"] if img_tag else ""
-            
-            embed = {
-                "title": title,
-                "description": description,
-                "url": url,
-                "image": image
-            }
-            
+        url = (url or "").strip().rstrip(").,;]!>'\"")
+        async with httpx.AsyncClient(timeout=8.0, headers={
+            "User-Agent": "Mozilla/5.0 (compatible; CordisBot/1.0; +https://cordis.local)"
+        }) as client:
+            video_id = extract_youtube_video_id(url)
+            if video_id:
+                embed = await fetch_youtube_embed(client, url, video_id)
+            else:
+                response = await client.get(url, follow_redirects=True)
+                response.raise_for_status()
+
+                soup = BeautifulSoup(response.text, 'html.parser')
+
+                title_tag = soup.find("meta", property="og:title")
+                title = title_tag["content"] if title_tag else (soup.title.string if soup.title else url)
+
+                desc_tag = soup.find("meta", property="og:description")
+                description = desc_tag["content"] if desc_tag else ""
+
+                img_tag = soup.find("meta", property="og:image")
+                image = img_tag["content"] if img_tag else ""
+
+                embed = {
+                    "title": title,
+                    "description": description,
+                    "url": url,
+                    "image": image,
+                    "type": "link",
+                    "video_id": None,
+                    "provider": None,
+                }
+
             db_msg = db.query(db_models.DBMessage).filter(db_models.DBMessage.message_id == message_id).first()
             if db_msg:
                 content = dict(db_msg.content)
                 embeds = list(content.get("embeds", []))
-                embeds.append(embed)
-                content["embeds"] = embeds
-                db_msg.content = content
-                
-                from sqlalchemy.orm.attributes import flag_modified
-                flag_modified(db_msg, "content")
-                db.commit()
-                
-                channel = db.query(db_models.DBChannel).filter(db_models.DBChannel.channel_id == channel_id).first()
-                author_user = db.query(db_models.DBUser).filter(db_models.DBUser.user_id == db_msg.author_id).first()
-                
-                broadcast_msg = {
-                    "type": "message_update",
-                    "message_id": db_msg.message_id,
-                    "channel_id": db_msg.channel_id,
-                    "server_id": channel.server_id if channel else None,
-                    "author_id": db_msg.author_id,
-                    "author": models.UserResponse.from_orm(author_user).dict() if author_user else None,
-                    "content": db_msg.content,
-                    "created_at": db_msg.created_at,
-                    "modified_at": db_msg.modified_at,
-                    "message_type": db_msg.message_type,
-                    "parent_id": db_msg.parent_id,
-                    "thread_id": db_msg.thread_id,
-                    "mentions": db_msg.mentions,
-                    "flags": db_msg.flags,
-                    "reactions": db_msg.reactions
-                }
-                
-                await manager.broadcast(channel_id, broadcast_msg)
-                
+                already = any(
+                    (e.get("video_id") and e.get("video_id") == embed.get("video_id"))
+                    or (e.get("url") and e.get("url") == embed.get("url"))
+                    for e in embeds
+                    if isinstance(e, dict)
+                )
+                if not already:
+                    embeds.append(embed)
+                    content["embeds"] = embeds
+                    db_msg.content = content
+
+                    from sqlalchemy.orm.attributes import flag_modified
+                    flag_modified(db_msg, "content")
+                    db.commit()
+
+                    channel = db.query(db_models.DBChannel).filter(db_models.DBChannel.channel_id == channel_id).first()
+                    author_user = db.query(db_models.DBUser).filter(db_models.DBUser.user_id == db_msg.author_id).first()
+
+                    broadcast_msg = {
+                        "type": "message_update",
+                        "message_id": db_msg.message_id,
+                        "channel_id": db_msg.channel_id,
+                        "server_id": channel.server_id if channel else None,
+                        "author_id": db_msg.author_id,
+                        "author": models.UserResponse.from_orm(author_user).dict() if author_user else None,
+                        "content": db_msg.content,
+                        "created_at": db_msg.created_at,
+                        "modified_at": db_msg.modified_at,
+                        "message_type": db_msg.message_type,
+                        "parent_id": db_msg.parent_id,
+                        "thread_id": db_msg.thread_id,
+                        "mentions": db_msg.mentions,
+                        "flags": db_msg.flags,
+                        "reactions": db_msg.reactions
+                    }
+
+                    await manager.broadcast(channel_id, broadcast_msg)
+
     except Exception as e:
         print(f"Error fetching metadata for {url}: {e}")
     finally:

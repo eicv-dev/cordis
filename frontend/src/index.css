@@ -655,6 +655,17 @@ h1, h2, h3, h4, h5, h6 {
   flex-direction: column;
   gap: 8px;
 }
+.msg-embed-youtube {
+  border-left-color: #ff0000;
+  max-width: 480px;
+}
+.msg-embed-provider {
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.02em;
+}
 .msg-embed-title {
   color: var(--link-color);
   font-weight: 600;
@@ -677,6 +688,52 @@ h1, h2, h3, h4, h5, h6 {
   max-height: 300px;
   border-radius: 4px;
   object-fit: contain;
+}
+.msg-embed-video {
+  position: relative;
+  width: 100%;
+  border-radius: 4px;
+  overflow: hidden;
+  background: #000;
+  aspect-ratio: 16 / 9;
+}
+.msg-embed-video-poster {
+  position: relative;
+  display: block;
+  width: 100%;
+  height: 100%;
+  padding: 0;
+  border: none;
+  cursor: pointer;
+  background: #000;
+}
+.msg-embed-video-thumb {
+  width: 100%;
+  height: 100%;
+  max-height: none;
+  object-fit: cover;
+  display: block;
+}
+.msg-embed-play-btn {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  pointer-events: none;
+  transition: transform var(--transition-fast);
+}
+.msg-embed-video-poster:hover .msg-embed-play-btn {
+  transform: scale(1.08);
+}
+.msg-embed-video-poster:hover .msg-embed-play-bg {
+  fill: #cc0000;
+}
+.msg-embed-iframe {
+  width: 100%;
+  height: 100%;
+  border: 0;
+  display: block;
 }
 
 .mention-ping {
@@ -1265,7 +1322,6 @@ h1, h2, h3, h4, h5, h6 {
   min-height: 200px;
 }
 
-/* ========== Mobile / responsive layout ========== */
 @media (max-width: 768px) {
   .app-layout {
     position: relative;
@@ -1285,7 +1341,6 @@ h1, h2, h3, h4, h5, h6 {
     z-index: 10040;
   }
 
-  /* Left nav: server rail + channel list as a slide-in drawer */
   .server-sidebar {
     position: fixed;
     top: 0;
@@ -1318,7 +1373,6 @@ h1, h2, h3, h4, h5, h6 {
     box-shadow: 8px 0 24px rgba(0, 0, 0, 0.35);
   }
 
-  /* Chat fills the screen */
   .chat-area {
     width: 100%;
     min-width: 0;
@@ -1381,7 +1435,8 @@ h1, h2, h3, h4, h5, h6 {
     word-break: break-word;
   }
 
-  .msg-embed {
+  .msg-embed,
+  .msg-embed-youtube {
     max-width: 100%;
   }
 
@@ -1389,7 +1444,10 @@ h1, h2, h3, h4, h5, h6 {
     max-height: 220px;
   }
 
-  /* Touch-friendly message actions (tap message to reveal) */
+  .msg-embed-video {
+    max-width: 100%;
+  }
+
   .message > div[style*="display: flex"] {
     flex-wrap: wrap;
   }
@@ -1438,7 +1496,7 @@ h1, h2, h3, h4, h5, h6 {
   }
 
   .chat-input {
-    font-size: 16px; /* avoid iOS zoom on focus */
+    font-size: 16px;
     max-height: 120px;
     overflow-y: auto;
   }
@@ -1470,7 +1528,6 @@ h1, h2, h3, h4, h5, h6 {
     max-width: 50vw !important;
   }
 
-  /* Member list as right drawer */
   .member-list {
     display: flex;
     position: fixed;
@@ -1500,7 +1557,6 @@ h1, h2, h3, h4, h5, h6 {
     border-bottom: 1px solid var(--border-subtle);
   }
 
-  /* Auth */
   .auth-container {
     padding: var(--space-3);
     align-items: flex-start;
@@ -1513,7 +1569,6 @@ h1, h2, h3, h4, h5, h6 {
     max-width: 100%;
   }
 
-  /* Modals */
   .modal-overlay {
     align-items: flex-end;
     padding: 0;
@@ -1555,19 +1610,16 @@ h1, h2, h3, h4, h5, h6 {
     min-height: 44px;
   }
 
-  /* Profile popover centered card on mobile */
   .profile-popover.profile-popover-mobile {
     position: fixed !important;
     z-index: 10050;
   }
 
-  /* Tooltips: hide side tooltips that go off-screen on mobile */
   [data-tooltip]::before,
   [data-tooltip]::after {
     display: none !important;
   }
 
-  /* Audio / file attachments */
   .audio-attachment,
   .file-attachment,
   .msg-attachment {
@@ -1576,20 +1628,17 @@ h1, h2, h3, h4, h5, h6 {
     box-sizing: border-box;
   }
 
-  /* Emoji picker full-width-ish */
   .EmojiPickerReact {
     --epr-emoji-size: 28px !important;
     width: min(320px, calc(100vw - 24px)) !important;
   }
 
-  /* Context menus stay on-screen */
   .dropdown-item {
     min-height: 40px;
     display: flex;
     align-items: center;
   }
 
-  /* Server cards in discover */
   .server-card {
     flex-direction: column;
     align-items: stretch;
@@ -1600,7 +1649,6 @@ h1, h2, h3, h4, h5, h6 {
     width: 100%;
   }
 
-  /* Prevent horizontal overflow from long content */
   .msg-content {
     min-width: 0;
     overflow: hidden;
@@ -1617,7 +1665,6 @@ h1, h2, h3, h4, h5, h6 {
   }
 }
 
-/* Narrow phones */
 @media (max-width: 380px) {
   .server-sidebar {
     width: 64px;
@@ -1647,7 +1694,6 @@ h1, h2, h3, h4, h5, h6 {
   }
 }
 
-/* Landscape phones: slightly shorter chrome */
 @media (max-width: 900px) and (max-height: 500px) and (orientation: landscape) {
   .chat-header {
     height: 40px;

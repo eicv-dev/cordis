@@ -141,8 +141,87 @@ const renderMessageText = (text: string | undefined, onMentionClick?: (username:
   );
 };
 
+const extractYoutubeVideoId = (url: string | undefined | null): string | null => {
+  if (!url) return null;
+  const cleaned = url.trim().replace(/[).,;!>'"]+$/, '');
+  const patterns = [
+    /(?:youtube\.com\/watch\?(?:[^#\s]*&)?v=|youtube\.com\/embed\/|youtube\.com\/v\/|youtube\.com\/shorts\/|youtu\.be\/)([A-Za-z0-9_-]{11})/i,
+    /youtube\.com\/live\/([A-Za-z0-9_-]{11})/i,
+  ];
+  for (const re of patterns) {
+    const m = cleaned.match(re);
+    if (m) return m[1];
+  }
+  return null;
+};
+
 const MessageEmbed = ({ embed, onImageLoad }: { embed: any, onImageLoad?: () => void }) => {
-  if (!embed || (!embed.title && !embed.description && !embed.image)) return null;
+  const [playing, setPlaying] = useState(false);
+  const videoId =
+    embed?.video_id ||
+    (embed?.type === 'youtube' ? extractYoutubeVideoId(embed?.url) : null) ||
+    extractYoutubeVideoId(embed?.url);
+  const isYoutube = embed?.type === 'youtube' || !!videoId;
+
+  if (!embed || (!embed.title && !embed.description && !embed.image && !videoId)) return null;
+
+  if (isYoutube && videoId) {
+    const watchUrl = embed.url || `https://www.youtube.com/watch?v=${videoId}`;
+    const thumb =
+      embed.image ||
+      `https://i.ytimg.com/vi/${videoId}/hqdefault.jpg`;
+
+    return (
+      <div className="msg-embed msg-embed-youtube">
+        <div className="msg-embed-provider">YouTube</div>
+        {embed.title && (
+          <a href={watchUrl} target="_blank" rel="noopener noreferrer" className="msg-embed-title">
+            {embed.title}
+          </a>
+        )}
+        {embed.description && (
+          <div className="msg-embed-description">{embed.description}</div>
+        )}
+        <div className="msg-embed-video">
+          {playing ? (
+            <iframe
+              className="msg-embed-iframe"
+              src={`https://www.youtube-nocookie.com/embed/${videoId}?autoplay=1&rel=0`}
+              title={embed.title || 'YouTube video'}
+              allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share"
+              allowFullScreen
+              onLoad={onImageLoad}
+            />
+          ) : (
+            <button
+              type="button"
+              className="msg-embed-video-poster"
+              onClick={() => setPlaying(true)}
+              aria-label="Play YouTube video"
+            >
+              <img
+                src={getFullUrl(thumb)}
+                alt={embed.title || 'YouTube thumbnail'}
+                className="msg-embed-thumbnail msg-embed-video-thumb"
+                onLoad={onImageLoad}
+              />
+              <span className="msg-embed-play-btn" aria-hidden>
+                <svg viewBox="0 0 68 48" width="68" height="48">
+                  <path
+                    className="msg-embed-play-bg"
+                    d="M66.52,7.74c-0.78-2.93-2.49-5.41-5.42-6.19C55.79,.13,34,0,34,0S12.21,.13,6.9,1.55 C3.97,2.33,2.27,4.81,1.48,7.74C0.06,13.05,0,24,0,24s0.06,10.95,1.48,16.26c0.78,2.93,2.49,5.41,5.42,6.19 C12.21,47.87,34,48,34,48s21.79-0.13,27.1-1.55c2.93-0.78,4.64-3.26,5.42-6.19C67.94,34.95,68,24,68,24S67.94,13.05,66.52,7.74z"
+                    fill="#f00"
+                  />
+                  <path d="M 45,24 27,14 27,34" fill="#fff" />
+                </svg>
+              </span>
+            </button>
+          )}
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="msg-embed">
       <div className="msg-embed-content">
@@ -525,7 +604,6 @@ function App() {
   const [revealedMessages, setRevealedMessages] = useState<Record<number, any>>({});
   const [msgContextMenu, setMsgContextMenu] = useState<{x: number, y: number, message: any} | null>(null);
 
-  // Mobile navigation
   const [isMobile, setIsMobile] = useState(() =>
     typeof window !== 'undefined' && window.matchMedia('(max-width: 768px)').matches
   );
@@ -543,7 +621,6 @@ function App() {
       if (mobile) {
         setShowMemberList(false);
         setMobileMembersOpen(false);
-        // Open nav when landing on mobile with no channel selected
         setMobileNavOpen((prev) => prev || !activeChannelRef.current);
       } else {
         setShowMemberList(true);
@@ -763,7 +840,6 @@ function App() {
     setMessages([]);
     setCategories([]);
     if (ws) { ws.close(); setWs(null); }
-    // Keep channel list open on mobile so user can pick a channel
     if (isMobile) setMobileNavOpen(true);
     setMobileMembersOpen(false);
     
@@ -773,8 +849,6 @@ function App() {
     try {
       const data = await loadServerChannelsAndCategories(server.server_id);
       if (data.length > 0) {
-        // On mobile, auto-open first channel only if user already had a channel context;
-        // always select so chat is ready, but keep nav open briefly is handled in selectChannel closing it.
         selectChannel(data[0]);
       }
     } finally {

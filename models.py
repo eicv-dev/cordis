@@ -11,6 +11,9 @@ class Embed(BaseModel):
     description: Optional[str] = None
     url: Optional[str] = None
     image: Optional[str] = None
+    type: Optional[str] = None
+    video_id: Optional[str] = None
+    provider: Optional[str] = None
 
 class MessageContent(BaseModel):
     text: str
