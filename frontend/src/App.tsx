@@ -705,11 +705,14 @@ function App() {
           next[chanId].last_message_id = data.message_id;
           
           const amIMentioned = currentUserRef.current && data.mentions && data.mentions.includes(currentUserRef.current.user_id);
+          const isDM = !data.server_id;
+          const isFromSomeoneElse = data.author_id !== currentUserRef.current?.user_id;
+          const shouldPing = (amIMentioned || (isDM && isFromSomeoneElse));
           
-          if (amIMentioned) {
+          if (shouldPing) {
             next[chanId].mentions_count += 1;
             if (typeof Notification !== 'undefined' && Notification.permission === 'granted' && document.hidden) {
-              const notification = new Notification(`New Mention from ${data.author?.display_name || data.author?.username}`, {
+              const notification = new Notification(`New Message from ${data.author?.display_name || data.author?.username}`, {
                 body: data.content.text
               });
               notification.onclick = () => {
@@ -736,12 +739,15 @@ function App() {
           next[chanId].last_message_id = data.message_id;
           
           const amIMentioned = currentUserRef.current && data.mentions && data.mentions.includes(currentUserRef.current.user_id);
+          const isDM = !data.server_id;
+          const isFromSomeoneElse = data.author_id !== currentUserRef.current?.user_id;
+          const shouldPing = (amIMentioned || (isDM && isFromSomeoneElse));
           
           if (activeChannelRef.current?.channel_id !== chanId) {
-            if (amIMentioned) {
+            if (shouldPing) {
               next[chanId].mentions_count += 1;
               if (typeof Notification !== 'undefined' && Notification.permission === 'granted' && document.hidden) {
-                const notification = new Notification(`New Mention from ${data.author?.display_name || data.author?.username}`, {
+                const notification = new Notification(`New Message from ${data.author?.display_name || data.author?.username}`, {
                   body: data.content.text
                 });
                 notification.onclick = () => {
@@ -1731,15 +1737,21 @@ function App() {
         </div>
         <div className="channel-list">
           {isViewingDMs ? (
-            dms.map(dm => (
+            dms.map(dm => {
+              const unreadState = unreadStates[dm.channel_id];
+              const mentionCount = unreadState?.mentions_count || 0;
+              return (
               <div key={dm.channel_id} className={`channel-item ${activeChannel?.channel_id === dm.channel_id ? 'active' : ''}`} onClick={() => selectChannel(dm)} style={{padding: '6px 8px', display: 'flex', alignItems: 'center', gap: '10px'}}>
                 <div className="user-avatar" style={{width: '32px', height: '32px'}}>
                   {getAvatarContent(dm.target_user)}
                   <div className={`status-indicator ${isUserOnline(dm.target_user?.user_id, dm.target_user?.username) ? 'online' : 'offline'}`} style={{width: '10px', height: '10px', bottom: '-2px', right: '-2px', border: '2px solid var(--bg-panel)'}}></div>
                 </div>
-                <span style={{fontWeight: 500}} title={dm.target_user?.username ? `@${dm.target_user.username}` : undefined}>{dm.target_user?.display_name || dm.target_user?.username || 'Unknown User'}</span>
+                <span style={{fontWeight: 500, flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap'}} title={dm.target_user?.username ? `@${dm.target_user.username}` : undefined}>{dm.target_user?.display_name || dm.target_user?.username || 'Unknown User'}</span>
+                {mentionCount > 0 && (
+                  <div className="mention-badge" style={{position: 'static', transform: 'none', marginLeft: 'auto', fontSize: '11px', padding: '2px 6px', height: '16px', lineHeight: '12px', display: 'flex', alignItems: 'center', justifyContent: 'center'}}>{mentionCount}</div>
+                )}
               </div>
-            ))
+            )})
           ) : isLoadingChannels ? (
             <>
               <div className="skeleton skeleton-text" style={{height: '24px', marginBottom: '8px'}}></div>

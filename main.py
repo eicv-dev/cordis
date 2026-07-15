@@ -545,19 +545,24 @@ async def websocket_endpoint(websocket: WebSocket, channel_id: int, token: str =
             validated_msg = models.MessageSend(**raw_data)
             
             # parse mentions
+            current_mentions = set(validated_msg.mentions) if validated_msg.mentions else set()
             if validated_msg.content and validated_msg.content.text:
                 mentioned_usernames = re.findall(r'@([a-zA-Z0-9_]+)', validated_msg.content.text)
                 if mentioned_usernames:
                     mentioned_users = db.query(db_models.DBUser).filter(db_models.DBUser.username.in_(mentioned_usernames)).all()
-                    current_mentions = set(validated_msg.mentions)
                     current_mentions.update(u.user_id for u in mentioned_users)
-                    validated_msg.mentions = list(current_mentions)
+            
+            # auto-mention on reply
+            if getattr(validated_msg, "parent_id", 0) != 0:
+                parent_msg = db.query(db_models.DBMessage).filter(db_models.DBMessage.message_id == validated_msg.parent_id).first()
+                if parent_msg and parent_msg.author_id:
+                    current_mentions.add(parent_msg.author_id)
+            
+            validated_msg.mentions = list(current_mentions)
 
-            msg_id = random.randint(1000000, 9999999) # server generated ID (i hope this is fine)
             timestamp = int(time.time())
             
             db_msg = db_models.DBMessage(
-                message_id=msg_id,
                 channel_id=channel_id,
                 author_id=user.user_id,
                 content=validated_msg.content.dict(),
@@ -572,6 +577,8 @@ async def websocket_endpoint(websocket: WebSocket, channel_id: int, token: str =
             )
             db.add(db_msg)
             db.commit()
+            db.refresh(db_msg)
+            msg_id = db_msg.message_id
             
             broadcast_msg = {
                 "message_id": msg_id,
@@ -740,18 +747,34 @@ def get_my_unreads(current_user: db_models.DBUser = Depends(get_current_user), d
     for cid in channel_ids:
         last_read_id = read_map.get(cid, 0)
         
-        latest_msg = db.query(db_models.DBMessage).filter(db_models.DBMessage.channel_id == cid).order_by(db_models.DBMessage.message_id.desc()).first()
+        latest_msg = db.query(db_models.DBMessage).filter(db_models.DBMessage.channel_id == cid).order_by(db_models.DBMessage.created_at.desc(), db_models.DBMessage.message_id.desc()).first()
         last_msg_id = latest_msg.message_id if latest_msg else 0
         
-        new_msgs = db.query(db_models.DBMessage).filter(
-            db_models.DBMessage.channel_id == cid,
-            db_models.DBMessage.message_id > last_read_id
-        ).all()
+        last_read_msg = db.query(db_models.DBMessage).filter(db_models.DBMessage.message_id == last_read_id).first() if last_read_id > 0 else None
         
-        mentions_count = sum(1 for m in new_msgs if m.mentions and current_user.user_id in m.mentions)
+        if last_read_msg:
+            new_msgs = db.query(db_models.DBMessage).filter(
+                db_models.DBMessage.channel_id == cid,
+                (db_models.DBMessage.created_at > last_read_msg.created_at) |
+                ((db_models.DBMessage.created_at == last_read_msg.created_at) & (db_models.DBMessage.message_id > last_read_id))
+            ).all()
+        else:
+            new_msgs = db.query(db_models.DBMessage).filter(
+                db_models.DBMessage.channel_id == cid,
+                db_models.DBMessage.message_id > last_read_id
+            ).all()
         
         channel_obj = next((c for c in all_channels if c.channel_id == cid), None)
         server_id = channel_obj.server_id if channel_obj else None
+        
+        mentions_count = 0
+        for m in new_msgs:
+            if m.author_id == current_user.user_id:
+                continue
+            if channel_obj and channel_obj.channel_type == "dm":
+                mentions_count += 1
+            elif m.mentions and current_user.user_id in m.mentions:
+                mentions_count += 1
         
         results[cid] = models.UnreadState(
             server_id=server_id,
