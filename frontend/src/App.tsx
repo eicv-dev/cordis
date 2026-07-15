@@ -13,6 +13,13 @@ const getFullUrl = (url: string | undefined | null) => {
   return url;
 };
 
+const pingSound = typeof Audio !== 'undefined' ? new Audio('/sounds/ping.mp3') : null;
+const playPingSound = () => {
+  if (!pingSound) return;
+  pingSound.currentTime = 0;
+  pingSound.play().catch(() => {});
+};
+
 const formatLastActive = (lastActiveAt: number | undefined, isOnline: boolean) => {
   if (isOnline) return "Active now";
   if (!lastActiveAt) return "Unknown";
@@ -726,6 +733,7 @@ function App() {
 
           if (shouldPing) {
             next[chanId].mentions_count += 1;
+            playPingSound();
             if (typeof Notification !== 'undefined' && Notification.permission === 'granted' && document.hidden) {
               const notification = new Notification(`New Message from ${data.author?.display_name || data.author?.username}`, {
                 body: data.content.text
@@ -764,6 +772,7 @@ function App() {
           if (activeChannelRef.current?.channel_id !== chanId) {
             if (shouldPing) {
               next[chanId].mentions_count += 1;
+              playPingSound();
               if (typeof Notification !== 'undefined' && Notification.permission === 'granted' && document.hidden) {
                 const notification = new Notification(`New Message from ${data.author?.display_name || data.author?.username}`, {
                   body: data.content.text
