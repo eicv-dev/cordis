@@ -360,7 +360,7 @@ function App() {
   const [dms, setDms] = useState<any[]>([]);
   const [isViewingDMs, setIsViewingDMs] = useState(true);
   
-  // Loading States
+  // Loading States 
   const [isLoadingAuth, setIsLoadingAuth] = useState(false);
   const [isLoadingServers, setIsLoadingServers] = useState(false);
   const [isLoadingChannels, setIsLoadingChannels] = useState(false);
@@ -379,6 +379,9 @@ function App() {
   const [unreadStates, setUnreadStates] = useState<Record<number, { server_id: number | null, last_read_message_id: number, last_message_id: number, mentions_count: number }>>({});
   const activeChannelRef = useRef<any>(null);
   useEffect(() => { activeChannelRef.current = activeChannel; }, [activeChannel]);
+  const activeServerRef = useRef<any>(null);
+  useEffect(() => { activeServerRef.current = activeServer; }, [activeServer]);
+  const fetchServerMembersAndPresenceRef = useRef<any>(null);
   const dmsRef = useRef<any[]>([]);
   const serversRef = useRef<any[]>([]);
   const selectChannelRef = useRef<any>(null);
@@ -665,6 +668,10 @@ function App() {
     }
   };
 
+  useEffect(() => {
+    fetchServerMembersAndPresenceRef.current = fetchServerMembersAndPresence;
+  });
+
   const loadServerChannelsAndCategories = async (serverId: number) => {
     const [chanRes, catRes] = await Promise.all([
       fetch(`${API_BASE}/servers/${serverId}/channels`, { headers: { Authorization: `Bearer ${token}` } }),
@@ -850,6 +857,10 @@ function App() {
       } else if (data.type === 'ban_update') {
         if (currentUserRef.current) {
           setUser({ ...currentUserRef.current, status: data.status });
+        }
+      } else if (data.type === 'member_update') {
+        if (activeServerRef.current && activeServerRef.current.server_id === data.server_id) {
+          fetchServerMembersAndPresenceRef.current?.(data.server_id);
         }
       } else if (data.type === 'unread_notification') {
         setUnreadStates(prev => {
