@@ -595,6 +595,14 @@ function App() {
     }
   };
 
+  const closeSocket = () => {
+    if (wsRef.current) {
+      wsRef.current.close();
+      wsRef.current = null;
+    }
+    setWs(null);
+  };
+
   const selectServer = async (server: any) => {
     setIsViewingDMs(false);
     setActiveServer(server);
@@ -652,7 +660,7 @@ function App() {
   const selectChannel = async (channel: any) => {
     setActiveChannel(channel);
     if (ws) { ws.close(); }
-    
+
     const connectGen = ++selectChannelGenRef.current;
 
     let lastMsgId = 0;
@@ -719,6 +727,24 @@ function App() {
           setUser({ ...currentUserRef.current, status: data.status });
         }
       } else if (data.type === 'unread_notification') {
+        const amIMentioned = currentUserRef.current && data.mentions && data.mentions.includes(currentUserRef.current.user_id);
+        const isDM = !data.server_id;
+        const isFromSomeoneElse = data.author_id !== currentUserRef.current?.user_id;
+        const shouldPing = (amIMentioned || (isDM && isFromSomeoneElse));
+
+        if (shouldPing) {
+          playPingSound();
+          if (typeof Notification !== 'undefined' && Notification.permission === 'granted' && document.hidden) {
+            const notification = new Notification(`New Message from ${data.author?.display_name || data.author?.username}`, {
+              body: data.content.text
+            });
+            notification.onclick = () => {
+              window.focus();
+              navigateToChannelRef.current?.(data.server_id, data.channel_id);
+            };
+          }
+        }
+
         setUnreadStates(prev => {
           const next = { ...prev };
           const chanId = data.channel_id;
@@ -726,23 +752,8 @@ function App() {
 
           next[chanId].last_message_id = data.message_id;
 
-          const amIMentioned = currentUserRef.current && data.mentions && data.mentions.includes(currentUserRef.current.user_id);
-          const isDM = !data.server_id;
-          const isFromSomeoneElse = data.author_id !== currentUserRef.current?.user_id;
-          const shouldPing = (amIMentioned || (isDM && isFromSomeoneElse));
-
           if (shouldPing) {
             next[chanId].mentions_count += 1;
-            playPingSound();
-            if (typeof Notification !== 'undefined' && Notification.permission === 'granted' && document.hidden) {
-              const notification = new Notification(`New Message from ${data.author?.display_name || data.author?.username}`, {
-                body: data.content.text
-              });
-              notification.onclick = () => {
-                window.focus();
-                navigateToChannelRef.current?.(data.server_id, data.channel_id);
-              };
-            }
           }
           return next;
         });
@@ -757,6 +768,26 @@ function App() {
             prev.some(msg => msg.message_id === data.message_id) ? prev : [...prev, data]
           );
         }
+
+        const amIMentioned = currentUserRef.current && data.mentions && data.mentions.includes(currentUserRef.current.user_id);
+        const isDM = !data.server_id;
+        const isFromSomeoneElse = data.author_id !== currentUserRef.current?.user_id;
+        const shouldPing = (amIMentioned || (isDM && isFromSomeoneElse));
+        const isChannelInactive = activeChannelRef.current?.channel_id !== data.channel_id;
+
+        if (isChannelInactive && shouldPing) {
+          playPingSound();
+          if (typeof Notification !== 'undefined' && Notification.permission === 'granted' && document.hidden) {
+            const notification = new Notification(`New Message from ${data.author?.display_name || data.author?.username}`, {
+              body: data.content.text
+            });
+            notification.onclick = () => {
+              window.focus();
+              navigateToChannelRef.current?.(data.server_id, data.channel_id);
+            };
+          }
+        }
+
         setUnreadStates(prev => {
           const next = { ...prev };
           const chanId = data.channel_id;
@@ -764,24 +795,9 @@ function App() {
 
           next[chanId].last_message_id = data.message_id;
 
-          const amIMentioned = currentUserRef.current && data.mentions && data.mentions.includes(currentUserRef.current.user_id);
-          const isDM = !data.server_id;
-          const isFromSomeoneElse = data.author_id !== currentUserRef.current?.user_id;
-          const shouldPing = (amIMentioned || (isDM && isFromSomeoneElse));
-
-          if (activeChannelRef.current?.channel_id !== chanId) {
+          if (isChannelInactive) {
             if (shouldPing) {
               next[chanId].mentions_count += 1;
-              playPingSound();
-              if (typeof Notification !== 'undefined' && Notification.permission === 'granted' && document.hidden) {
-                const notification = new Notification(`New Message from ${data.author?.display_name || data.author?.username}`, {
-                  body: data.content.text
-                });
-                notification.onclick = () => {
-                  window.focus();
-                  navigateToChannelRef.current?.(data.server_id, data.channel_id);
-                };
-              }
             }
           } else {
             if (socket.readyState === WebSocket.OPEN) {
@@ -872,8 +888,7 @@ function App() {
     setActiveChannel(null);
     setMessages([]);
     setTypingUsers({});
-    if (ws) ws.close();
-    setWs(null);
+    closeSocket();
   };
 
   const sendMessage = async (e?: React.FormEvent) => {
@@ -1396,7 +1411,7 @@ function App() {
         setActiveChannel(null);
         setChannels([]);
         setMessages([]);
-        if (ws) { ws.close(); setWs(null); }
+        closeSocket();
         fetchMyServers();
       }
     } finally {
@@ -1417,7 +1432,7 @@ function App() {
         setActiveChannel(null);
         setChannels([]);
         setMessages([]);
-        if (ws) { ws.close(); setWs(null); }
+        closeSocket();
         fetchMyServers();
       }
     } finally {
