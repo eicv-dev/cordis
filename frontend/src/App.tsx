@@ -385,17 +385,7 @@ function App() {
   const [invitePreviewError, setInvitePreviewError] = useState('');
   const [isJoiningPreview, setIsJoiningPreview] = useState(false);
 
-  useEffect(() => {
-    const handleGlobalKeyDown = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') {
-        setShowAdminPanel(false);
-        // Also close other modals if they ever get the full-page treatment
-        setShowSettings(false);
-      }
-    };
-    window.addEventListener('keydown', handleGlobalKeyDown);
-    return () => window.removeEventListener('keydown', handleGlobalKeyDown);
-  }, []);
+
 
   useEffect(() => {
     const path = window.location.pathname;
@@ -656,6 +646,8 @@ function App() {
     setActiveChannel(channel);
     if (ws) { ws.close(); }
     
+    const connectGen = ++selectChannelGenRef.current;
+
     let lastMsgId = 0;
     const res = await fetch(`${API_BASE}/channels/${channel.channel_id}/messages?limit=50`, {
       headers: { Authorization: `Bearer ${token}` }
@@ -875,12 +867,17 @@ function App() {
     setWs(null);
   };
 
-  const sendMessage = async (e: React.FormEvent) => {
-    e.preventDefault();
+  const sendMessage = async (e?: React.FormEvent) => {
+    if (e) e.preventDefault();
     if (isSendingMessage) return;
     if ((!chatInput.trim() && !attachmentFile) || !ws || ws.readyState !== WebSocket.OPEN) return;
     
     setIsSendingMessage(true);
+
+    const textToSend = chatInput;
+    const parentId = replyingTo?.message_id || 0;
+    const fileToSend = attachmentFile;
+    const socket = ws;
 
     // Clear composer immediately (sync value + state) so a second path sees empty input
     setChatInput('');
@@ -1663,6 +1660,48 @@ function App() {
           setAttachmentPreview(null);
           return;
         }
+        if (showAdminPanel) {
+          e.preventDefault();
+          e.stopPropagation();
+          setShowAdminPanel(false);
+          return;
+        }
+        if (showSettings) {
+          e.preventDefault();
+          e.stopPropagation();
+          setShowSettings(false);
+          return;
+        }
+        if (showCreateServer) {
+          e.preventDefault();
+          e.stopPropagation();
+          setShowCreateServer(false);
+          return;
+        }
+        if (showDiscover) {
+          e.preventDefault();
+          e.stopPropagation();
+          setShowDiscover(false);
+          return;
+        }
+        if (showServerSettings) {
+          e.preventDefault();
+          e.stopPropagation();
+          setShowServerSettings(false);
+          return;
+        }
+        if (showCreateChannelModal) {
+          e.preventDefault();
+          e.stopPropagation();
+          setShowCreateChannelModal(false);
+          return;
+        }
+        if (showInvitePreview) {
+          e.preventDefault();
+          e.stopPropagation();
+          setShowInvitePreview(false);
+          return;
+        }
         // Nothing else open — blur the chat composer if it's focused
         if (e.target === inputRef.current) {
           e.preventDefault();
@@ -1671,7 +1710,7 @@ function App() {
         return;
       }
 
-      // "/" focuses the message textbox (and inserts "/") when not typing elsewhere
+      // "/" focuses the message textbox when not typing elsewhere
       if (
         e.key === '/' &&
         !e.ctrlKey &&
@@ -1686,15 +1725,9 @@ function App() {
         e.preventDefault();
         const input = inputRef.current;
         if (!input || input.disabled) return;
-        setChatInput((prev) => {
-          const next = prev + '/';
-          requestAnimationFrame(() => {
-            input.focus();
-            input.setSelectionRange(next.length, next.length);
-            input.style.height = 'auto';
-            input.style.height = Math.min(input.scrollHeight, 200) + 'px';
-          });
-          return next;
+        requestAnimationFrame(() => {
+          input.focus();
+          input.setSelectionRange(input.value.length, input.value.length);
         });
         return;
       }
@@ -2765,28 +2798,60 @@ function App() {
               </form>
               {adminMessage && <div style={{ color: 'var(--brand-primary)', marginBottom: '16px', fontSize: '16px' }}>{adminMessage}</div>}
               {adminUserResult && (
-                <div style={{ backgroundColor: 'var(--bg-card)', padding: '24px', borderRadius: '8px', width: '100%', border: '1px solid var(--border-subtle)' }}>
-                  <div style={{ fontWeight: 'bold', marginBottom: '12px', fontSize: '20px' }}>{adminUserResult.username} <span style={{ color: 'var(--text-muted)', fontSize: '14px', fontWeight: 'normal' }}>(ID: {adminUserResult.user_id})</span></div>
-                  <div style={{ marginBottom: '4px', fontSize: '16px' }}>Status: <span style={{ color: adminUserResult.status === 'BANNED' ? '#fa777c' : 'var(--text-main)' }}>{adminUserResult.status}</span></div>
-                  <div style={{ marginBottom: '4px', fontSize: '16px' }}>Roles: {adminUserResult.permissions?.join(', ') || 'None'}</div>
-                  {adminUserResult.muted_until && <div style={{ fontSize: '16px' }}>Muted Until: {new Date(adminUserResult.muted_until * 1000).toLocaleString()}</div>}
+                <div style={{ backgroundColor: '#111214', borderRadius: '8px', width: '100%', border: '1px solid var(--border-subtle)', overflow: 'hidden' }}>
+                  <div className="popover-header">
+                    {adminUserResult.banner && (
+                      <img src={getFullUrl(adminUserResult.banner)} alt="" style={{ position: 'absolute', top: 0, left: 0, width: '100%', height: '100%', objectFit: 'cover' }} />
+                    )}
+                    <div className="msg-avatar popover-avatar">
+                      {getAvatarContent(adminUserResult)}
+                    </div>
+                  </div>
+                  <div className="popover-body">
+                    <h3 className="popover-username" style={{ margin: 0, display: 'flex', alignItems: 'center', gap: '8px' }}>
+                      {renderUsernameWithBadges(adminUserResult)}
+                      <span style={{ fontSize: '12px', color: 'var(--text-muted)', fontWeight: 'normal' }}>(ID: {adminUserResult.user_id})</span>
+                    </h3>
+                    <div style={{ fontSize: '14px', color: 'var(--text-muted)', marginBottom: '16px', marginTop: '2px' }}>@{adminUserResult.username}</div>
+                    
+                    <div className="desc-title">CORDIS MEMBER SINCE</div>
+                    <p style={{ color: '#e5e7eb', fontSize: '0.875rem', marginBottom: '12px' }}>July 2026</p>
+                    
+                    <div className="desc-title">LAST ACTIVE</div>
+                    <p style={{ color: '#e5e7eb', fontSize: '0.875rem', marginBottom: '12px' }}>
+                      {formatLastActive(adminUserResult.last_active_at, isUserOnline(adminUserResult.user_id, adminUserResult.username))}
+                    </p>
 
-                  <div style={{ display: 'flex', gap: '12px', flexWrap: 'wrap', marginTop: '24px' }}>
-                    {user?.permissions?.includes('SYSTEM_ADMIN') && (
-                      <>
-                        <button type="button" className="btn btn-secondary" onClick={() => handleAdminAction(adminUserResult.status === 'BANNED' ? 'unban' : 'ban', adminUserResult.user_id)}>{adminUserResult.status === 'BANNED' ? 'Unban' : 'Ban'}</button>
-                        <button type="button" className="btn btn-secondary" onClick={() => handleAdminAction('promote', adminUserResult.user_id, { role: 'SYSTEM_MOD' })}>Make Mod</button>
-                        <button type="button" className="btn btn-secondary" onClick={() => handleAdminAction('promote', adminUserResult.user_id, { role: 'SYSTEM_ADMIN' })}>Make Admin</button>
-                        <button type="button" className="btn btn-secondary" onClick={() => handleAdminAction('demote', adminUserResult.user_id)}>Demote</button>
-                      </>
-                    )}
-                    {(user?.permissions?.includes('SYSTEM_ADMIN') || user?.permissions?.includes('SYSTEM_MOD')) && (
-                      <>
-                        <button type="button" className="btn btn-secondary" onClick={() => handleAdminAction('mute', adminUserResult.user_id, { duration_seconds: 3600 })}>Mute (1h)</button>
-                        <button type="button" className="btn btn-secondary" onClick={() => handleAdminAction('mute', adminUserResult.user_id, { duration_seconds: 0 })}>Mute (Indefinite)</button>
-                        <button type="button" className="btn btn-secondary" onClick={() => handleAdminAction('unmute', adminUserResult.user_id)}>Unmute</button>
-                      </>
-                    )}
+                    <div className="desc-title">JOINED SERVERS</div>
+                    <p style={{ color: '#e5e7eb', fontSize: '0.875rem', marginBottom: '16px' }}>
+                      {adminUserResult.joined_servers && adminUserResult.joined_servers.length > 0 
+                        ? adminUserResult.joined_servers.map((s: any) => `${s.server_name} (ID: ${s.server_id})`).join(', ')
+                        : 'None'}
+                    </p>
+
+                    <div style={{ borderTop: '1px solid var(--border-subtle)', margin: '16px 0' }}></div>
+
+                    <div style={{ marginBottom: '4px', fontSize: '14px' }}><strong>Status:</strong> <span style={{ color: adminUserResult.status === 'BANNED' ? '#fa777c' : 'var(--text-main)' }}>{adminUserResult.status}</span></div>
+                    <div style={{ marginBottom: '4px', fontSize: '14px' }}><strong>Roles:</strong> {adminUserResult.permissions?.join(', ') || 'None'}</div>
+                    {adminUserResult.muted_until && <div style={{ fontSize: '14px', color: '#fa777c' }}><strong>Muted Until:</strong> {new Date(adminUserResult.muted_until * 1000).toLocaleString()}</div>}
+                    
+                    <div style={{ display: 'flex', gap: '12px', flexWrap: 'wrap', marginTop: '24px' }}>
+                      {user?.permissions?.includes('SYSTEM_ADMIN') && (
+                        <>
+                          <button type="button" className="btn btn-secondary" onClick={() => handleAdminAction(adminUserResult.status === 'BANNED' ? 'unban' : 'ban', adminUserResult.user_id)}>{adminUserResult.status === 'BANNED' ? 'Unban' : 'Ban'}</button>
+                          <button type="button" className="btn btn-secondary" onClick={() => handleAdminAction('promote', adminUserResult.user_id, { role: 'SYSTEM_MOD' })}>Make Mod</button>
+                          <button type="button" className="btn btn-secondary" onClick={() => handleAdminAction('promote', adminUserResult.user_id, { role: 'SYSTEM_ADMIN' })}>Make Admin</button>
+                          <button type="button" className="btn btn-secondary" onClick={() => handleAdminAction('demote', adminUserResult.user_id)}>Demote</button>
+                        </>
+                      )}
+                      {(user?.permissions?.includes('SYSTEM_ADMIN') || user?.permissions?.includes('SYSTEM_MOD')) && (
+                        <>
+                          <button type="button" className="btn btn-secondary" onClick={() => handleAdminAction('mute', adminUserResult.user_id, { duration_seconds: 3600 })}>Mute (1h)</button>
+                          <button type="button" className="btn btn-secondary" onClick={() => handleAdminAction('mute', adminUserResult.user_id, { duration_seconds: 0 })}>Mute (Indefinite)</button>
+                          <button type="button" className="btn btn-secondary" onClick={() => handleAdminAction('unmute', adminUserResult.user_id)}>Unmute</button>
+                        </>
+                      )}
+                    </div>
                   </div>
                 </div>
               )}
