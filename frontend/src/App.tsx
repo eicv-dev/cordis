@@ -1966,10 +1966,32 @@ function App() {
                   <div className="msg-reactions">
                     {m.reactions.map((r: any, rIdx: number) => {
                       const hasReacted = currentUserRef.current && r.user_ids.includes(currentUserRef.current.user_id);
+                      
+                      const reactorNames = r.user_ids.map((id: number) => {
+                        if (currentUserRef.current?.user_id === id) return currentUserRef.current.username;
+                        let member = serverMembers.find(u => u.user_id === id);
+                        if (member) return member.username;
+                        let dmUser = dms.find(d => d.target_user.user_id === id)?.target_user;
+                        if (dmUser) return dmUser.username;
+                        let msgAuthor = messages.find(msg => msg.author.user_id === id)?.author;
+                        if (msgAuthor) return msgAuthor.username;
+                        return `User`;
+                      });
+                      
+                      let tooltipText = "";
+                      if (reactorNames.length > 0) {
+                         if (reactorNames.length <= 3) {
+                            tooltipText = reactorNames.join(", ") + " reacted";
+                         } else {
+                            tooltipText = reactorNames.slice(0, 3).join(", ") + ` and ${reactorNames.length - 3} others reacted`;
+                         }
+                      }
+
                       return (
                         <button key={rIdx} className={`reaction-pill ${hasReacted ? 'active' : ''}`} onClick={() => handleReactionToggle(m.message_id, r.emoji)}>
                           <span className="reaction-emoji">{r.emoji}</span>
                           <span className="reaction-count">{r.count}</span>
+                          <div className="reaction-tooltip">{tooltipText}</div>
                         </button>
                       );
                     })}

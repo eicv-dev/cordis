@@ -646,6 +646,7 @@ h1, h2, h3, h4, h5, h6 {
   margin-top: 4px;
 }
 .reaction-pill {
+  position: relative;
   background: var(--bg-tertiary);
   border: 1px solid transparent;
   border-radius: 6px;
@@ -675,6 +676,41 @@ h1, h2, h3, h4, h5, h6 {
 }
 .reaction-pill.active .reaction-count {
   color: var(--brand-primary);
+}
+
+.reaction-tooltip {
+  position: absolute;
+  bottom: 100%;
+  left: 50%;
+  transform: translateX(-50%);
+  margin-bottom: 6px;
+  background-color: #111214;
+  color: #dbdee1;
+  padding: 6px 12px;
+  border-radius: 4px;
+  font-size: 12px;
+  font-weight: 500;
+  white-space: nowrap;
+  pointer-events: none;
+  opacity: 0;
+  visibility: hidden;
+  transition: opacity 0.1s ease, visibility 0.1s ease;
+  box-shadow: 0 4px 6px rgba(0, 0, 0, 0.2);
+  z-index: 50;
+}
+.reaction-tooltip::after {
+  content: '';
+  position: absolute;
+  top: 100%;
+  left: 50%;
+  margin-left: -5px;
+  border-width: 5px;
+  border-style: solid;
+  border-color: #111214 transparent transparent transparent;
+}
+.reaction-pill:hover .reaction-tooltip {
+  opacity: 1;
+  visibility: visible;
 }
 
 .emoji-picker-tooltip {
