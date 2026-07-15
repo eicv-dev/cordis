@@ -579,11 +579,14 @@ async def websocket_endpoint(websocket: WebSocket, channel_id: int, token: str =
                     read_state = db_models.DBChannelReadState(user_id=user.user_id, channel_id=channel_id, last_read_message_id=message_id)
                     db.add(read_state)
                 else:
-                    current_read_msg = db.query(db_models.DBMessage).filter(db_models.DBMessage.message_id == read_state.last_read_message_id).first()
                     new_read_msg = db.query(db_models.DBMessage).filter(db_models.DBMessage.message_id == message_id).first()
-                    
                     if new_read_msg:
-                        read_state.last_read_message_id = message_id
+                        current_read_msg = db.query(db_models.DBMessage).filter(db_models.DBMessage.message_id == read_state.last_read_message_id).first()
+                        if current_read_msg:
+                            if new_read_msg.created_at > current_read_msg.created_at or (new_read_msg.created_at == current_read_msg.created_at and new_read_msg.message_id > current_read_msg.message_id):
+                                read_state.last_read_message_id = message_id
+                        else:
+                            read_state.last_read_message_id = message_id
                 db.commit()
                 continue
 
