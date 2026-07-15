@@ -438,6 +438,10 @@ function App() {
   // DM State
   const [dms, setDms] = useState<any[]>([]);
   const [isViewingDMs, setIsViewingDMs] = useState(true);
+  const isViewingDMsRef = useRef(true);
+  useEffect(() => {
+    isViewingDMsRef.current = isViewingDMs;
+  }, [isViewingDMs]);
   
   // Loading States
   const [isLoadingAuth, setIsLoadingAuth] = useState(false);
@@ -455,7 +459,7 @@ function App() {
   const [mentionTriggerIndex, setMentionTriggerIndex] = useState(-1);
   const [activeSuggestionIndex, setActiveSuggestionIndex] = useState(0);
   const inputRef = useRef<HTMLTextAreaElement>(null);
-  const [unreadStates, setUnreadStates] = useState<Record<number, { server_id: number | null, last_read_message_id: number, last_message_id: number, mentions_count: number }>>({});
+  const [unreadStates, setUnreadStates] = useState<Record<number, { server_id: number | null, last_read_message_id: number, last_message_id: number, mentions_count: number, has_unread?: boolean }>>({});
   const activeChannelRef = useRef<any>(null);
   useEffect(() => { activeChannelRef.current = activeChannel; }, [activeChannel]);
   const dmsRef = useRef<any[]>([]);
@@ -527,6 +531,7 @@ function App() {
   const [showAdminPanel, setShowAdminPanel] = useState(false);
   const [adminSearchUser, setAdminSearchUser] = useState('');
   const [adminUserResult, setAdminUserResult] = useState<any>(null);
+  const [adminUserServers, setAdminUserServers] = useState<any[]>([]);
   const [adminLoading, setAdminLoading] = useState(false);
   const [adminMessage, setAdminMessage] = useState('');
 
@@ -920,6 +925,7 @@ function App() {
            [channel.channel_id]: {
              ...(prev[channel.channel_id] || { server_id: channel.server_id || null, mentions_count: 0 }),
              last_read_message_id: Math.max(prev[channel.channel_id]?.last_read_message_id || 0, lastMsgId),
+             has_unread: false,
              mentions_count: 0
            }
         }));
@@ -967,12 +973,21 @@ function App() {
           setUser({ ...currentUserRef.current, status: data.status });
         }
       } else if (data.type === 'unread_notification') {
+        if (!data.server_id && isViewingDMsRef.current) {
+          if (!dmsRef.current.some(d => d.channel_id === data.channel_id)) {
+            fetch(`${API_BASE}/dms`, { headers: { Authorization: `Bearer ${token}` } })
+              .then(res => res.json())
+              .then(fetched => setDms(fetched))
+              .catch(e => console.error(e));
+          }
+        }
         setUnreadStates(prev => {
           const next = { ...prev };
           const chanId = data.channel_id;
           if (!next[chanId]) next[chanId] = { server_id: data.server_id || null, last_read_message_id: 0, last_message_id: 0, mentions_count: 0 };
           
           next[chanId].last_message_id = data.message_id;
+          next[chanId].has_unread = true;
           
           const amIMentioned = currentUserRef.current && data.mentions && data.mentions.includes(currentUserRef.current.user_id);
           const isDM = !data.server_id;
@@ -1009,6 +1024,7 @@ function App() {
           if (!next[chanId]) next[chanId] = { server_id: data.server_id || null, last_read_message_id: 0, last_message_id: 0, mentions_count: 0 };
           
           next[chanId].last_message_id = data.message_id;
+          next[chanId].has_unread = true;
           
           const amIMentioned = currentUserRef.current && data.mentions && data.mentions.includes(currentUserRef.current.user_id);
           const isDM = !data.server_id;
@@ -1675,9 +1691,19 @@ function App() {
       if (!res.ok) throw new Error('User not found');
       const data = await res.json();
       setAdminUserResult(data);
+      
+      const srvRes = await fetch(`${API_BASE}/admin/users/${data.user_id}/servers`, {
+        headers: { 'Authorization': `Bearer ${token}` }
+      });
+      if (srvRes.ok) {
+        setAdminUserServers(await srvRes.json());
+      } else {
+        setAdminUserServers([]);
+      }
     } catch (err: any) {
       setAdminMessage(err.message);
       setAdminUserResult(null);
+      setAdminUserServers([]);
     } finally {
       setAdminLoading(false);
     }
@@ -2079,6 +2105,48 @@ function App() {
           setReplyingTo(null);
           return;
         }
+        if (showAdminPanel) {
+          e.preventDefault();
+          e.stopPropagation();
+          setShowAdminPanel(false);
+          return;
+        }
+        if (showSettings) {
+          e.preventDefault();
+          e.stopPropagation();
+          setShowSettings(false);
+          return;
+        }
+        if (showCreateServer) {
+          e.preventDefault();
+          e.stopPropagation();
+          setShowCreateServer(false);
+          return;
+        }
+        if (showDiscover) {
+          e.preventDefault();
+          e.stopPropagation();
+          setShowDiscover(false);
+          return;
+        }
+        if (showServerSettings) {
+          e.preventDefault();
+          e.stopPropagation();
+          setShowServerSettings(false);
+          return;
+        }
+        if (showCreateChannelModal) {
+          e.preventDefault();
+          e.stopPropagation();
+          setShowCreateChannelModal(false);
+          return;
+        }
+        if (showInvitePreview) {
+          e.preventDefault();
+          e.stopPropagation();
+          setShowInvitePreview(false);
+          return;
+        }
         if (attachmentFile) {
           e.preventDefault();
           e.stopPropagation();
@@ -2259,7 +2327,7 @@ function App() {
   const serverMentionCount: Record<number, number> = {};
   
   Object.values(unreadStates).forEach(state => {
-    const isUnread = state.last_message_id > state.last_read_message_id;
+    const isUnread = state.has_unread ?? (state.last_message_id > state.last_read_message_id);
     if (state.server_id) {
       if (isUnread) serverUnreadStatus[state.server_id] = true;
       if (state.mentions_count > 0) {
@@ -2286,10 +2354,14 @@ function App() {
       .filter(c => (catId == null ? !c.category_id : c.category_id === catId))
       .sort((a, b) => (a.position || 0) - (b.position || 0) || a.channel_id - b.channel_id);
 
-  const renderChannelRow = (c: any) => (
+  const renderChannelRow = (c: any) => {
+    const unreadState = unreadStates[c.channel_id];
+    const isUnread = unreadState ? (unreadState.has_unread ?? (unreadState.last_message_id > unreadState.last_read_message_id)) : false;
+    const isUnreadClass = isUnread && activeChannel?.channel_id !== c.channel_id ? 'unread' : '';
+    return (
     <div
       key={c.channel_id}
-      className={`channel-item ${activeChannel?.channel_id === c.channel_id ? 'active' : ''}`}
+      className={`channel-item ${activeChannel?.channel_id === c.channel_id ? 'active' : ''} ${isUnreadClass}`}
       onClick={() => selectChannel(c)}
       onContextMenu={(e) => {
         if (!isServerAdmin) return;
@@ -2313,6 +2385,7 @@ function App() {
       )}
     </div>
   );
+};
 
   const membersVisible = isMobile ? mobileMembersOpen : showMemberList;
 
@@ -2355,7 +2428,7 @@ function App() {
       <div className="panel server-sidebar">
         <div className={`server-icon ${isViewingDMs ? 'active' : ''}`} onClick={() => { setIsViewingDMs(true); setActiveServer(null); setActiveChannel(null); setMessages([]); if (isMobile) setMobileNavOpen(true); setMobileMembersOpen(false); }} data-tooltip="Direct Messages">
           {isViewingDMs && <div className="active-pill" />}
-          {!isViewingDMs && serverUnreadStatus[0] && <div className="unread-dot" />}
+          {!isViewingDMs && serverUnreadStatus[0] && !serverMentionCount[0] && <div className="unread-dot" />}
           <Home size={24} color={isViewingDMs ? '#fff' : 'var(--text-main)'} />
           {serverMentionCount[0] > 0 && <div className="mention-badge">{serverMentionCount[0]}</div>}
         </div>
@@ -2429,7 +2502,7 @@ function App() {
               data-tooltip={isPinned ? `${s.server_name} (pinned)` : s.server_name}
             >
               {activeServer?.server_id === s.server_id && <div className="active-pill" />}
-              {activeServer?.server_id !== s.server_id && serverUnreadStatus[s.server_id] && <div className="unread-dot" />}
+              {activeServer?.server_id !== s.server_id && serverUnreadStatus[s.server_id] && !serverMentionCount[s.server_id] && <div className="unread-dot" />}
               {getServerIconContent(s)}
               {isPinned && (
                 <div className="server-pin-badge" title="Opens on launch">
@@ -2527,9 +2600,12 @@ function App() {
           {isViewingDMs ? (
             dms.map(dm => {
               const unreadState = unreadStates[dm.channel_id];
+              const isUnread = unreadState ? (unreadState.has_unread ?? (unreadState.last_message_id > unreadState.last_read_message_id)) : false;
+              const isUnreadClass = isUnread && activeChannel?.channel_id !== dm.channel_id ? 'unread' : '';
               const mentionCount = unreadState?.mentions_count || 0;
+              
               return (
-              <div key={dm.channel_id} className={`channel-item ${activeChannel?.channel_id === dm.channel_id ? 'active' : ''}`} onClick={() => selectChannel(dm)} style={{padding: '6px 8px', display: 'flex', alignItems: 'center', gap: '10px'}}>
+              <div key={dm.channel_id} className={`channel-item ${activeChannel?.channel_id === dm.channel_id ? 'active' : ''} ${isUnreadClass}`} onClick={() => selectChannel(dm)} style={{padding: '6px 8px', display: 'flex', alignItems: 'center', gap: '10px'}}>
                 <div className="user-avatar" style={{width: '32px', height: '32px'}}>
                   {getAvatarContent(dm.target_user)}
                   <div className={`status-indicator ${isUserOnline(dm.target_user?.user_id, dm.target_user?.username) ? 'online' : 'offline'}`} style={{width: '10px', height: '10px', bottom: '-2px', right: '-2px', border: '2px solid var(--bg-panel)'}}></div>
@@ -3547,43 +3623,97 @@ function App() {
       {/* Admin Panel Modal */}
       {showAdminPanel && (
         <div className="modal-overlay" onClick={(e) => { if (e.target === e.currentTarget) setShowAdminPanel(false); }}>
-          <div className="modal-content" style={{maxWidth: '500px'}}>
-            <div className="modal-header">
+          <div className="modal-content" style={{width: '100vw', height: '100vh', maxWidth: 'none', maxHeight: 'none', borderRadius: 0, display: 'flex', flexDirection: 'column'}}>
+            <div className="modal-header" style={{ position: 'relative' }}>
               <div className="modal-title">System Administration</div>
-              <div className="modal-desc">Manage system-wide moderation</div>
+              <div className="modal-desc">ADMINSTRATEEE THEMMMMMMM</div>
+              <button 
+                onClick={() => setShowAdminPanel(false)}
+                style={{ position: 'absolute', top: '16px', right: '16px', background: 'none', border: 'none', color: 'var(--text-muted)', cursor: 'pointer', fontSize: '12px', display: 'flex', flexDirection: 'column', alignItems: 'center' }}
+              >
+                <span style={{ fontSize: '20px', marginBottom: '2px' }}>×</span>
+                ESC
+              </button>
             </div>
-            <div className="modal-body">
-              <form onSubmit={handleAdminSearch} style={{display: 'flex', gap: '8px', marginBottom: '16px'}}>
-                <input className="input" placeholder="Search by username..." value={adminSearchUser} onChange={e => setAdminSearchUser(e.target.value)} />
-                <button type="submit" className="btn" disabled={adminLoading}>Search</button>
-              </form>
-              {adminMessage && <div style={{color: 'var(--brand-primary)', marginBottom: '16px'}}>{adminMessage}</div>}
-              {adminUserResult && (
-                <div style={{backgroundColor: 'var(--bg-secondary)', padding: '16px', borderRadius: '8px'}}>
-                  <div style={{fontWeight: 'bold', marginBottom: '8px'}}>{adminUserResult.username} (ID: {adminUserResult.user_id})</div>
-                  <div>Status: {adminUserResult.status}</div>
-                  <div>Roles: {adminUserResult.permissions?.join(', ') || 'None'}</div>
-                  {adminUserResult.muted_until && <div>Muted Until: {new Date(adminUserResult.muted_until * 1000).toLocaleString()}</div>}
-                  
-                  <div style={{display: 'flex', gap: '8px', flexWrap: 'wrap', marginTop: '16px'}}>
-                    {user?.permissions?.includes('SYSTEM_ADMIN') && (
-                      <>
-                        <button type="button" className="btn btn-secondary" onClick={() => handleAdminAction(adminUserResult.status === 'BANNED' ? 'unban' : 'ban', adminUserResult.user_id)}>{adminUserResult.status === 'BANNED' ? 'Unban' : 'Ban'}</button>
-                        <button type="button" className="btn btn-secondary" onClick={() => handleAdminAction('promote', adminUserResult.user_id, {role: 'SYSTEM_MOD'})}>Make Mod</button>
-                        <button type="button" className="btn btn-secondary" onClick={() => handleAdminAction('promote', adminUserResult.user_id, {role: 'SYSTEM_ADMIN'})}>Make Admin</button>
-                        <button type="button" className="btn btn-secondary" onClick={() => handleAdminAction('demote', adminUserResult.user_id)}>Demote</button>
-                      </>
-                    )}
-                    {(user?.permissions?.includes('SYSTEM_ADMIN') || user?.permissions?.includes('SYSTEM_MOD')) && (
-                      <>
-                        <button type="button" className="btn btn-secondary" onClick={() => handleAdminAction('mute', adminUserResult.user_id, {duration_seconds: 3600})}>Mute (1h)</button>
-                        <button type="button" className="btn btn-secondary" onClick={() => handleAdminAction('mute', adminUserResult.user_id, {duration_seconds: 0})}>Mute (Indefinite)</button>
-                        <button type="button" className="btn btn-secondary" onClick={() => handleAdminAction('unmute', adminUserResult.user_id)}>Unmute</button>
-                      </>
-                    )}
+            <div className="modal-body" style={{ flex: 1, overflowY: 'auto' }}>
+              <div style={{ width: '100%', maxWidth: '500px', margin: '0 auto', paddingTop: '32px' }}>
+                <form onSubmit={handleAdminSearch} style={{display: 'flex', gap: '8px', marginBottom: '16px'}}>
+                  <input className="input" placeholder="Search by username..." value={adminSearchUser} onChange={e => setAdminSearchUser(e.target.value)} style={{ flex: 1 }} />
+                  <button type="submit" className="btn" disabled={adminLoading}>Search</button>
+                </form>
+                {adminMessage && <div style={{color: 'var(--brand-primary)', marginBottom: '16px'}}>{adminMessage}</div>}
+                {adminUserResult && (
+                  <div className="profile-popover" style={{ position: 'relative', width: '100%', marginBottom: '16px' }}>
+                    <div className="popover-header">
+                      {adminUserResult.banner && (
+                        <img
+                          src={getFullUrl(adminUserResult.banner)}
+                          alt=""
+                          style={{ position: 'absolute', top: 0, left: 0, width: '100%', height: '100%', objectFit: 'cover' }}
+                        />
+                      )}
+                      <div className="msg-avatar popover-avatar">
+                        {getAvatarContent(adminUserResult)}
+                      </div>
+                    </div>
+                    <div className="popover-body">
+                      <h3 className="popover-username" style={{margin: 0}}>
+                        {renderUsernameWithBadges(adminUserResult)} <span style={{fontSize: '14px', fontWeight: 'normal', color: 'var(--text-muted)'}}>(ID: {adminUserResult.user_id})</span>
+                      </h3>
+                      <div style={{fontSize: '14px', color: 'var(--text-muted)', marginBottom: '8px', marginTop: '2px'}}>@{adminUserResult.username}</div>
+                      {adminUserResult.description && (
+                        <div className="popover-description">
+                          <div className="desc-title">ABOUT ME</div>
+                          <p>{adminUserResult.description}</p>
+                        </div>
+                      )}
+                      <div className="desc-title" style={{marginTop: '12px'}}>CORDIS MEMBER SINCE</div>
+                      <p style={{color: '#e5e7eb', fontSize: '0.875rem', marginBottom: '8px'}}>July 2026</p>
+                      <div className="desc-title" style={{marginTop: '12px'}}>LAST ACTIVE</div>
+                      <p style={{color: '#e5e7eb', fontSize: '0.875rem', marginBottom: '16px'}}>
+                        {formatLastActive(adminUserResult.last_active_at, isUserOnline(adminUserResult.user_id, adminUserResult.username))}
+                      </p>
+                      
+                      {adminUserServers.length > 0 && (
+                        <>
+                          <div className="desc-title" style={{marginTop: '12px'}}>SERVERS JOINED</div>
+                          {adminUserServers.map(server => (
+                            <div key={server.server_id} style={{color: '#e5e7eb', fontSize: '0.875rem', marginBottom: '4px'}}>
+                              {server.server_name} <span style={{color: 'var(--text-muted)'}}>(ID: {server.server_id})</span>
+                            </div>
+                          ))}
+                          <div style={{marginBottom: '16px'}}></div>
+                        </>
+                      )}
+
+                      <div className="desc-title" style={{marginTop: '12px'}}>MODERATION STATUS</div>
+                      <div style={{color: '#e5e7eb', fontSize: '0.875rem', marginBottom: '16px'}}>
+                        Status: {adminUserResult.status}<br/>
+                        Roles: {adminUserResult.permissions?.join(', ') || 'None'}<br/>
+                        {adminUserResult.muted_until ? <>Muted Until: {new Date(adminUserResult.muted_until * 1000).toLocaleString()}<br/></> : null}
+                      </div>
+                      
+                      <div style={{display: 'flex', gap: '8px', flexWrap: 'wrap', marginTop: '16px'}}>
+                        {user?.permissions?.includes('SYSTEM_ADMIN') && (
+                          <>
+                            <button type="button" className="btn btn-secondary" onClick={() => handleAdminAction(adminUserResult.status === 'BANNED' ? 'unban' : 'ban', adminUserResult.user_id)}>{adminUserResult.status === 'BANNED' ? 'Unban' : 'Ban'}</button>
+                            <button type="button" className="btn btn-secondary" onClick={() => handleAdminAction('promote', adminUserResult.user_id, {role: 'SYSTEM_MOD'})}>Make Mod</button>
+                            <button type="button" className="btn btn-secondary" onClick={() => handleAdminAction('promote', adminUserResult.user_id, {role: 'SYSTEM_ADMIN'})}>Make Admin</button>
+                            <button type="button" className="btn btn-secondary" onClick={() => handleAdminAction('demote', adminUserResult.user_id)}>Demote</button>
+                          </>
+                        )}
+                        {(user?.permissions?.includes('SYSTEM_ADMIN') || user?.permissions?.includes('SYSTEM_MOD')) && (
+                          <>
+                            <button type="button" className="btn btn-secondary" onClick={() => handleAdminAction('mute', adminUserResult.user_id, {duration_seconds: 3600})}>Mute (1h)</button>
+                            <button type="button" className="btn btn-secondary" onClick={() => handleAdminAction('mute', adminUserResult.user_id, {duration_seconds: 0})}>Mute (Indefinite)</button>
+                            <button type="button" className="btn btn-secondary" onClick={() => handleAdminAction('unmute', adminUserResult.user_id)}>Unmute</button>
+                          </>
+                        )}
+                      </div>
+                    </div>
                   </div>
-                </div>
-              )}
+                )}
+              </div>
             </div>
           </div>
         </div>

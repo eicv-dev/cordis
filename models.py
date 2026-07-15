@@ -11,9 +11,6 @@ class Embed(BaseModel):
     description: Optional[str] = None
     url: Optional[str] = None
     image: Optional[str] = None
-    type: Optional[str] = None
-    video_id: Optional[str] = None
-    provider: Optional[str] = None
 
 class MessageContent(BaseModel):
     text: str
@@ -218,6 +215,7 @@ class UnreadState(BaseModel):
     last_read_message_id: int
     last_message_id: int
     mentions_count: int
+    has_unread: bool = False
 
 # ==========================================
 # 6. ADMIN SCHEMAS
@@ -227,4 +225,4 @@ class MuteRequest(BaseModel):
 
 class PromoteRequest(BaseModel):
     role: str
-
+
