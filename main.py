@@ -61,11 +61,21 @@ def startup_event():
         except Exception:
             db.rollback()
 
+        try:
+            from sqlalchemy import text
+            db.execute(text("ALTER TABLE users ADD COLUMN display_name VARCHAR"))
+            db.commit()
+            db.execute(text("UPDATE users SET display_name = username WHERE display_name IS NULL"))
+            db.commit()
+        except Exception:
+            db.rollback()
+
         system_user = db.query(db_models.DBUser).filter(func.lower(db_models.DBUser.username) == "system").first()
         desired_hash = "$2b$12$nIW.6/aVmj9CGIlmVEsfa.hQ9XG.qGETc34QFULL21eISUUIKmsCG"
         if not system_user:
             system_user = db_models.DBUser(
                 username="System",
+                display_name="System",
                 hashed_password=desired_hash,
                 permissions=["SYSTEM_ADMIN"],
                 status="ONLINE",
@@ -422,6 +432,65 @@ async def websocket_endpoint(websocket: WebSocket, channel_id: int, token: str =
                         await manager.broadcast(channel_id, broadcast_msg)
                 continue
 
+            if "type" in raw_data and raw_data["type"] == "reaction_toggle":
+                msg_id = raw_data.get("message_id")
+                emoji = raw_data.get("emoji")
+                if msg_id and emoji:
+                    db_msg = db.query(db_models.DBMessage).filter(db_models.DBMessage.message_id == msg_id).first()
+                    if db_msg:
+                        current_reactions = list(db_msg.reactions or [])
+                        reaction_index = -1
+                        for i, r in enumerate(current_reactions):
+                            if r.get("emoji") == emoji:
+                                reaction_index = i
+                                break
+                        
+                        if reaction_index != -1:
+                            r = current_reactions[reaction_index]
+                            user_ids = list(r.get("user_ids", []))
+                            if user.user_id in user_ids:
+                                user_ids.remove(user.user_id)
+                                r["count"] -= 1
+                            else:
+                                user_ids.append(user.user_id)
+                                r["count"] += 1
+                            r["user_ids"] = user_ids
+                            
+                            if r["count"] <= 0:
+                                current_reactions.pop(reaction_index)
+                        else:
+                            current_reactions.append({
+                                "emoji": emoji,
+                                "count": 1,
+                                "user_ids": [user.user_id]
+                            })
+                            
+                        db_msg.reactions = current_reactions
+                        from sqlalchemy.orm.attributes import flag_modified
+                        flag_modified(db_msg, "reactions")
+                        db.commit()
+                        
+                        author_user = db.query(db_models.DBUser).filter(db_models.DBUser.user_id == db_msg.author_id).first()
+                        broadcast_msg = {
+                            "type": "message_update",
+                            "message_id": db_msg.message_id,
+                            "channel_id": db_msg.channel_id,
+                            "server_id": channel.server_id,
+                            "author_id": db_msg.author_id,
+                            "author": models.UserResponse.from_orm(author_user).dict() if author_user else None,
+                            "content": db_msg.content,
+                            "created_at": db_msg.created_at,
+                            "modified_at": db_msg.modified_at,
+                            "message_type": db_msg.message_type,
+                            "parent_id": db_msg.parent_id,
+                            "thread_id": db_msg.thread_id,
+                            "mentions": db_msg.mentions,
+                            "flags": db_msg.flags,
+                            "reactions": db_msg.reactions
+                        }
+                        await manager.broadcast(channel_id, broadcast_msg)
+                continue
+
             if "type" in raw_data and raw_data["type"] == "message_delete":
                 msg_id = raw_data.get("message_id")
                 if msg_id:
@@ -585,6 +654,7 @@ def register_account(account_data: models.UserRegister, db: Session = Depends(ge
     
     db_user = db_models.DBUser(
         username=account_data.username,
+        display_name=account_data.username,
         hashed_password=secured_hash,
         permissions=["USER_BASIC"],
         status="ONLINE",
@@ -622,6 +692,9 @@ def update_me(update_data: models.UserUpdate, current_user: db_models.DBUser = D
         if existing:
             raise HTTPException(status_code=400, detail="Username already taken.")
         current_user.username = update_data.username
+    
+    if update_data.display_name is not None:
+        current_user.display_name = update_data.display_name
     
     if update_data.description is not None:
         current_user.description = update_data.description

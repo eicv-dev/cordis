@@ -44,6 +44,7 @@ class TokenData(BaseModel):
 class UserResponse(BaseModel):
     user_id: int
     username: str
+    display_name: str
     permissions: List[str]
     status: str
     description: Optional[str] = None
@@ -64,6 +65,7 @@ class UserResponse(BaseModel):
 
 class UserUpdate(BaseModel):
     username: str
+    display_name: Optional[str] = None
     description: Optional[str] = None
     profile_picture: Optional[str] = None
     banner: Optional[str] = None

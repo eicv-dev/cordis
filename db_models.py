@@ -6,6 +6,7 @@ class DBUser(Base):
 
     user_id = Column(Integer, primary_key=True, index=True, autoincrement=True)
     username = Column(String, unique=True, index=True)
+    display_name = Column(String)
     hashed_password = Column(String)
     permissions = Column(JSON)
     status = Column(String)

@@ -1,8 +1,9 @@
 import React, { useState, useEffect, useRef } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
-import { Compass, Plus, Hash, LogOut, Send, Loader2, Settings, Users, Home, MessageSquare, Check, X, AlertTriangle, Pencil, Trash2, Reply, File as FileIcon, UploadCloud, Download, Hammer, Play, Pause } from 'lucide-react';
+import { Compass, Plus, Hash, LogOut, Send, Loader2, Settings, Users, Home, MessageSquare, Check, X, AlertTriangle, Pencil, Trash2, Reply, File as FileIcon, UploadCloud, Download, Hammer, Play, Pause, Smile } from 'lucide-react';
 import { useDropzone } from 'react-dropzone';
+import EmojiPicker, { Theme } from 'emoji-picker-react';
 
 const API_BASE = import.meta.env.VITE_API_BASE || (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1' ? "http://127.0.0.1:8000" : "");
 
@@ -255,6 +256,8 @@ const MessageAttachment = ({ url, onLoad }: { url: string, onLoad?: () => void }
   );
 };
 
+const DEFAULT_EMOJIS = ["💀", "😭", "❤️", "👍", "👎", "👆"];
+
 function App() {
   const [token, setToken] = useState<string | null>(localStorage.getItem('token'));
   const [user, setUser] = useState<any>(null);
@@ -295,6 +298,8 @@ function App() {
   useEffect(() => { dmsRef.current = dms; }, [dms]);
   useEffect(() => { serversRef.current = servers; }, [servers]);
   const [chatInput, setChatInput] = useState('');
+  const [showEmojiPicker, setShowEmojiPicker] = useState<number | null>(null);
+  const [showFullEmojiPicker, setShowFullEmojiPicker] = useState<number | null>(null);
   const [replyingTo, setReplyingTo] = useState<any>(null);
   const [attachmentFile, setAttachmentFile] = useState<File | null>(null);
   const [attachmentPreview, setAttachmentPreview] = useState<string | null>(null);
@@ -337,6 +342,7 @@ function App() {
   const [showSettings, setShowSettings] = useState(false);
   const [isSavingSettings, setIsSavingSettings] = useState(false);
   const [settingsUsername, setSettingsUsername] = useState('');
+  const [settingsDisplayName, setSettingsDisplayName] = useState('');
   const [settingsDescription, setSettingsDescription] = useState('');
   const [settingsProfilePic, setSettingsProfilePic] = useState('');
   const [settingsBanner, setSettingsBanner] = useState('');
@@ -666,7 +672,7 @@ function App() {
       const data = JSON.parse(event.data);
       if (data.type === 'typing') {
         if (data.user_id !== currentUserRef.current?.user_id) {
-          setTypingUsers(prev => ({ ...prev, [data.user_id]: data.username }));
+          setTypingUsers(prev => ({ ...prev, [data.user_id]: data.display_name || data.username }));
           setTimeout(() => {
             setTypingUsers(prev => {
               const next = { ...prev };
@@ -703,7 +709,7 @@ function App() {
           if (amIMentioned) {
             next[chanId].mentions_count += 1;
             if (typeof Notification !== 'undefined' && Notification.permission === 'granted' && document.hidden) {
-              const notification = new Notification(`New Mention from ${data.author?.username}`, {
+              const notification = new Notification(`New Mention from ${data.author?.display_name || data.author?.username}`, {
                 body: data.content.text
               });
               notification.onclick = () => {
@@ -735,7 +741,7 @@ function App() {
             if (amIMentioned) {
               next[chanId].mentions_count += 1;
               if (typeof Notification !== 'undefined' && Notification.permission === 'granted' && document.hidden) {
-                const notification = new Notification(`New Mention from ${data.author?.username}`, {
+                const notification = new Notification(`New Mention from ${data.author?.display_name || data.author?.username}`, {
                   body: data.content.text
                 });
                 notification.onclick = () => {
@@ -902,6 +908,17 @@ function App() {
     }
   };
 
+  const handleReactionToggle = (messageId: number, emoji: string) => {
+    if (!ws || ws.readyState !== WebSocket.OPEN) return;
+    ws.send(JSON.stringify({
+      type: "reaction_toggle",
+      message_id: messageId,
+      emoji: emoji
+    }));
+    setShowEmojiPicker(null);
+    setShowFullEmojiPicker(null);
+  };
+
   const handleRevealMessage = async (messageId: number) => {
     try {
       const res = await fetch(`${API_BASE}/messages/${messageId}`, {
@@ -993,7 +1010,7 @@ function App() {
     
     if (ws && user) {
       if (!typingTimeoutRef.current) {
-        ws.send(JSON.stringify({ type: 'typing', username: user.username }));
+        ws.send(JSON.stringify({ type: 'typing', username: user.display_name || user.username }));
       }
       clearTimeout(typingTimeoutRef.current);
       typingTimeoutRef.current = setTimeout(() => {
@@ -1108,6 +1125,7 @@ function App() {
   const openSettings = () => {
     if (user) {
       setSettingsUsername(user.username);
+      setSettingsDisplayName(user.display_name || user.username);
       setSettingsDescription(user.description || '');
       setSettingsProfilePic(user.profile_picture || '');
       setSettingsBanner(user.banner || '');
@@ -1223,6 +1241,7 @@ function App() {
         },
         body: JSON.stringify({
           username: settingsUsername,
+          display_name: settingsDisplayName,
           description: settingsDescription,
           profile_picture: finalProfilePic,
           banner: finalBanner
@@ -1360,7 +1379,8 @@ function App() {
     if (u?.profile_picture) {
       return <img src={getFullUrl(u.profile_picture)} alt="avatar" style={{width: '100%', height: '100%', borderRadius: '50%', objectFit: 'cover'}} />;
     }
-    return u?.username ? u.username.charAt(0).toUpperCase() : 'U';
+    const nameToUse = u?.display_name || u?.username;
+    return nameToUse ? nameToUse.charAt(0).toUpperCase() : 'U';
   };
 
   const renderUsernameWithBadges = (u: any) => {
@@ -1369,8 +1389,8 @@ function App() {
     const isMod = !isAdmin && u.permissions?.includes('SYSTEM_MOD');
     
     return (
-      <span style={{display: 'inline-flex', alignItems: 'center'}}>
-        {u.username}
+      <span style={{display: 'inline-flex', alignItems: 'center'}} title={`@${u.username}`}>
+        {u.display_name || u.username}
         {isAdmin && (
           <span style={{display: 'inline-flex', alignItems: 'center', gap: '2px', backgroundColor: 'var(--brand-primary)', color: 'white', padding: '1px 4px', borderRadius: '4px', fontSize: '10px', fontWeight: 'bold', marginLeft: '6px', verticalAlign: 'middle', height: '16px'}}>
             <Hammer size={10} /> ADMIN
@@ -1717,7 +1737,7 @@ function App() {
                   {getAvatarContent(dm.target_user)}
                   <div className={`status-indicator ${isUserOnline(dm.target_user?.user_id, dm.target_user?.username) ? 'online' : 'offline'}`} style={{width: '10px', height: '10px', bottom: '-2px', right: '-2px', border: '2px solid var(--bg-panel)'}}></div>
                 </div>
-                <span style={{fontWeight: 500}}>{dm.target_user?.username || 'Unknown User'}</span>
+                <span style={{fontWeight: 500}} title={dm.target_user?.username ? `@${dm.target_user.username}` : undefined}>{dm.target_user?.display_name || dm.target_user?.username || 'Unknown User'}</span>
               </div>
             ))
           ) : isLoadingChannels ? (
@@ -1942,10 +1962,39 @@ function App() {
                     </>
                   )
                 )}
+                {m.reactions && m.reactions.length > 0 && (
+                  <div className="msg-reactions">
+                    {m.reactions.map((r: any, rIdx: number) => {
+                      const hasReacted = currentUserRef.current && r.user_ids.includes(currentUserRef.current.user_id);
+                      return (
+                        <button key={rIdx} className={`reaction-pill ${hasReacted ? 'active' : ''}`} onClick={() => handleReactionToggle(m.message_id, r.emoji)}>
+                          <span className="reaction-emoji">{r.emoji}</span>
+                          <span className="reaction-count">{r.count}</span>
+                        </button>
+                      );
+                    })}
+                  </div>
+                )}
               </div>
               
               {!isDeleted && editingMessageId !== m.message_id && (
-                <div className="msg-actions">
+                <div className={`msg-actions ${showEmojiPicker === m.message_id || showFullEmojiPicker === m.message_id ? 'force-show' : ''}`} style={{position: 'relative'}}>
+                  <button className="icon-btn action-btn" onClick={() => setShowEmojiPicker(showEmojiPicker === m.message_id ? null : m.message_id)} title="Add Reaction">
+                    <Smile size={16} />
+                  </button>
+                  {showEmojiPicker === m.message_id && !showFullEmojiPicker && (
+                    <div className="emoji-picker-tooltip">
+                      {DEFAULT_EMOJIS.map(e => (
+                        <button key={e} className="emoji-btn" onClick={() => handleReactionToggle(m.message_id, e)}>{e}</button>
+                      ))}
+                      <button className="emoji-btn" onClick={() => setShowFullEmojiPicker(m.message_id)} style={{color: 'var(--text-muted)'}}><Plus size={20} /></button>
+                    </div>
+                  )}
+                  {showFullEmojiPicker === m.message_id && (
+                    <div style={{position: 'absolute', bottom: '100%', right: '0', zIndex: 50, marginBottom: '8px'}}>
+                      <EmojiPicker onEmojiClick={(e) => handleReactionToggle(m.message_id, e.emoji)} theme={Theme.DARK} />
+                    </div>
+                  )}
                   <button className="icon-btn action-btn" onClick={() => setReplyingTo(m)} title="Reply">
                     <Reply size={16} />
                   </button>
@@ -1988,7 +2037,7 @@ function App() {
                   <div className="user-avatar" style={{ width: '24px', height: '24px', fontSize: '10px' }}>
                     {getAvatarContent(u)}
                   </div>
-                  <span>{u.username}</span>
+                  <span title={`@${u.username}`}>{u.display_name || u.username}</span>
                 </div>
               ))}
             </div>
@@ -1996,7 +2045,7 @@ function App() {
           {replyingTo && (
             <div className="reply-banner" style={{display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '8px 16px', backgroundColor: 'var(--bg-secondary)', borderTopLeftRadius: '8px', borderTopRightRadius: '8px', borderBottom: '1px solid var(--border)'}}>
               <div style={{fontSize: '13px', color: 'var(--text-muted)'}}>
-                Replying to <span style={{fontWeight: 600, color: 'var(--text-primary)'}}>@{replyingTo.author?.username}</span>
+                Replying to <span style={{fontWeight: 600, color: 'var(--text-primary)'}} title={`@${replyingTo.author?.username}`}>@{replyingTo.author?.display_name || replyingTo.author?.username}</span>
               </div>
               <button className="icon-btn" style={{padding: '4px'}} onClick={() => setReplyingTo(null)}>
                 <X size={16} />
@@ -2155,6 +2204,7 @@ function App() {
           </div>
           <div className="popover-body">
             <h3 className="popover-username" style={{margin: 0}}>{renderUsernameWithBadges(selectedProfile.user)}</h3>
+            <div style={{fontSize: '14px', color: 'var(--text-muted)', marginBottom: '8px', marginTop: '2px'}}>@{selectedProfile.user.username}</div>
             {selectedProfile.user.description && (
               <div className="popover-description">
                 <div className="desc-title">ABOUT ME</div>
@@ -2370,6 +2420,10 @@ function App() {
                 </div>
 
                 <div style={{width: '100%', display: 'flex', flexDirection: 'column', gap: '16px'}}>
+                  <div>
+                    <label style={{fontSize: '12px', fontWeight: 600, color: 'var(--text-muted)', textTransform: 'uppercase', marginBottom: '8px', display: 'block'}}>Display Name</label>
+                    <input className="input" value={settingsDisplayName} onChange={e => setSettingsDisplayName(e.target.value)} required disabled={isSavingSettings} />
+                  </div>
                   <div>
                     <label style={{fontSize: '12px', fontWeight: 600, color: 'var(--text-muted)', textTransform: 'uppercase', marginBottom: '8px', display: 'block'}}>Username</label>
                     <input className="input" value={settingsUsername} onChange={e => setSettingsUsername(e.target.value)} required disabled={isSavingSettings} />
