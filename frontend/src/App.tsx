@@ -282,6 +282,8 @@ function App() {
 
   // Realtime State
   const [ws, setWs] = useState<WebSocket | null>(null);
+  const wsRef = useRef<WebSocket | null>(null);
+  const selectChannelGenRef = useRef(0);
   const [showMentions, setShowMentions] = useState(false);
   const [mentionFilter, setMentionFilter] = useState('');
   const [mentionTriggerIndex, setMentionTriggerIndex] = useState(-1);
@@ -327,6 +329,7 @@ function App() {
   }, [attachmentFile]);
 
   const [isSendingMessage, setIsSendingMessage] = useState(false);
+  const isSendingRef = useRef(false); // sync lock — state alone is too slow to prevent double-send
   const [editingMessageId, setEditingMessageId] = useState<number | null>(null);
   const [editContent, setEditContent] = useState('');
   const [typingUsers, setTypingUsers] = useState<Record<number, string>>({});
@@ -639,21 +642,36 @@ function App() {
 
   const selectChannel = async (channel: any) => {
     setActiveChannel(channel);
-    if (ws) { ws.close(); }
+
+    // Always tear down any existing socket via ref (state can be stale across rapid switches)
+    if (wsRef.current) {
+      wsRef.current.onmessage = null;
+      wsRef.current.onopen = null;
+      wsRef.current.onclose = null;
+      wsRef.current.close();
+      wsRef.current = null;
+    }
+    setWs(null);
+
+    // Generation token: if another selectChannel starts while we await fetch, abandon this one
+    const connectGen = ++selectChannelGenRef.current;
     
     let lastMsgId = 0;
     const res = await fetch(`${API_BASE}/channels/${channel.channel_id}/messages?limit=50`, {
       headers: { Authorization: `Bearer ${token}` }
     });
+    if (connectGen !== selectChannelGenRef.current) return;
+
     if (res.ok) {
       const msgs = await res.json();
+      if (connectGen !== selectChannelGenRef.current) return;
       setMessages(msgs);
       if (msgs.length > 0) {
         lastMsgId = msgs[msgs.length - 1].message_id;
         setUnreadStates(prev => ({
            ...prev,
            [channel.channel_id]: {
-             ...(prev[channel.channel_id] || { server_id: channel.server_id || null, last_message_id: lastMsgId, mentions_count: 0 }),
+             ...(prev[channel.channel_id] || { server_id: channel.server_id || null, mentions_count: 0 }),
              last_read_message_id: Math.max(prev[channel.channel_id]?.last_read_message_id || 0, lastMsgId),
              mentions_count: 0
            }
@@ -661,14 +679,19 @@ function App() {
       }
     }
 
+    if (connectGen !== selectChannelGenRef.current) return;
+
     const wsUrl = API_BASE.replace(/^http/, 'ws') + `/ws/${channel.channel_id}?token=${token}`;
     const socket = new WebSocket(wsUrl);
+    wsRef.current = socket;
     socket.onopen = () => {
+      if (wsRef.current !== socket) return;
       if (lastMsgId > 0) {
         socket.send(JSON.stringify({ type: 'read_update', message_id: lastMsgId }));
       }
     };
     socket.onmessage = (event) => {
+      if (wsRef.current !== socket) return;
       const data = JSON.parse(event.data);
       if (data.type === 'typing') {
         if (data.user_id !== currentUserRef.current?.user_id) {
@@ -729,7 +752,10 @@ function App() {
         }
       } else {
         if (data.channel_id === activeChannelRef.current?.channel_id) {
-          setMessages(prev => [...prev, data]);
+          // Dedupe if the same message arrives twice (e.g. dual WS connections)
+          setMessages(prev =>
+            prev.some(msg => msg.message_id === data.message_id) ? prev : [...prev, data]
+          );
         }
         setUnreadStates(prev => {
           const next = { ...prev };
@@ -769,8 +795,15 @@ function App() {
     };
     socket.onclose = () => {
       // If the websocket closes, we should nullify it so the UI knows it's disconnected
+      if (wsRef.current === socket) {
+        wsRef.current = null;
+      }
       setWs(prev => prev === socket ? null : prev);
     };
+    if (connectGen !== selectChannelGenRef.current) {
+      socket.close();
+      return;
+    }
     setWs(socket);
   };
 
@@ -842,17 +875,38 @@ function App() {
     setWs(null);
   };
 
-  const sendMessage = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (isSendingMessage) return;
-    if ((!chatInput.trim() && !attachmentFile) || !ws || ws.readyState !== WebSocket.OPEN) return;
-    
+  const sendMessage = async (e?: React.FormEvent) => {
+    e?.preventDefault();
+    e?.stopPropagation();
+
+    // Synchronous guard — absorbs Enter keydown + form submit in the same gesture
+    if (isSendingRef.current) return;
+
+    const textToSend = chatInput;
+    const fileToSend = attachmentFile;
+    const parentId = replyingTo?.message_id || 0;
+    const socket = wsRef.current || ws;
+
+    if ((!textToSend.trim() && !fileToSend) || !socket || socket.readyState !== WebSocket.OPEN) return;
+
+    // Latch BEFORE any await / setState so a second call cannot slip through
+    isSendingRef.current = true;
     setIsSendingMessage(true);
+
+    // Clear composer immediately (sync value + state) so a second path sees empty input
+    setChatInput('');
+    setAttachmentFile(null);
+    setReplyingTo(null);
+    if (inputRef.current) {
+      inputRef.current.value = '';
+      inputRef.current.style.height = 'auto';
+    }
+
     try {
       let attachedUrl = "";
-      if (attachmentFile) {
+      if (fileToSend) {
         const formData = new FormData();
-        formData.append("file", attachmentFile);
+        formData.append("file", fileToSend);
         formData.append("upload_type", "attachments");
         try {
           const res = await fetch(`${API_BASE}/api/upload`, {
@@ -871,22 +925,22 @@ function App() {
 
       const attachments = attachedUrl ? [attachedUrl] : [];
 
-      ws.send(JSON.stringify({
-        content: { text: chatInput, attachments: attachments, embeds: [] },
-        message_type: "DEFAULT",
-        parent_id: replyingTo?.message_id || 0,
-        mentions: [],
-        flags: [],
-        reactions: []
-      }));
-      setChatInput('');
-      if (inputRef.current) {
-        inputRef.current.style.height = 'auto';
+      if (socket.readyState === WebSocket.OPEN) {
+        socket.send(JSON.stringify({
+          content: { text: textToSend, attachments: attachments, embeds: [] },
+          message_type: "DEFAULT",
+          parent_id: parentId,
+          mentions: [],
+          flags: [],
+          reactions: []
+        }));
       }
-      setAttachmentFile(null);
-      setReplyingTo(null);
     } finally {
-      setIsSendingMessage(false);
+      // Keep the latch for a short window so late form-submit / double-Enter cannot re-send
+      window.setTimeout(() => {
+        isSendingRef.current = false;
+        setIsSendingMessage(false);
+      }, 400);
     }
   };
 
@@ -971,6 +1025,23 @@ function App() {
     }, 10);
   };
 
+  const startEditingLastOwnMessage = () => {
+    if (!user) return false;
+    const lastOwn = [...messages].reverse().find(
+      (m) => m.author_id === user.user_id && !m.flags?.includes('DELETED')
+    );
+    if (!lastOwn) return false;
+    setEditingMessageId(lastOwn.message_id);
+    setEditContent(lastOwn.content?.text || '');
+    setTimeout(() => {
+      document.getElementById(`message-${lastOwn.message_id}`)?.scrollIntoView({
+        behavior: 'smooth',
+        block: 'center',
+      });
+    }, 50);
+    return true;
+  };
+
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     if (showMentions) {
       const suggestions = getMentionSuggestions();
@@ -995,14 +1066,27 @@ function App() {
       }
     }
 
+    // Empty input + Up arrow → edit last message you sent (Discord-style)
+    if (e.key === 'ArrowUp' && !e.shiftKey && !e.ctrlKey && !e.metaKey && !e.altKey) {
+      const el = e.currentTarget;
+      const caretAtStart = (el.selectionStart ?? 0) === 0 && (el.selectionEnd ?? 0) === 0;
+      if (!chatInput.trim() && caretAtStart && !editingMessageId) {
+        e.preventDefault();
+        startEditingLastOwnMessage();
+        return;
+      }
+    }
+
+    // Escape for reply/attachment/blur is handled by the global keydown listener
+    // so emoji pickers, context menus, etc. take priority.
+
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
-      // Use form submit event or directly call sendMessage logic
-      // Since sendMessage takes a React.FormEvent, we'll fake it or use a separate submit trigger
-      // The easiest way is to click the hidden submit button, or dispatch an event, 
-      // but since we have `chatInput` in state, we can just call the submit logic.
-      const formEvent = e as unknown as React.FormEvent;
-      sendMessage(formEvent);
+      e.stopPropagation();
+      // Only send path for keyboard — form does not submit on Enter
+      if (!e.repeat) {
+        sendMessage();
+      }
     }
   };
 
@@ -1509,6 +1593,179 @@ function App() {
     );
   };
 
+  // Global shortcuts must be registered before any early returns (Rules of Hooks)
+  useEffect(() => {
+    if (!token) return;
+
+    const muted = !!(user && user.muted_until && (user.muted_until * 1000) > Date.now());
+
+    const isEditableTarget = (target: EventTarget | null) => {
+      if (!(target instanceof HTMLElement)) return false;
+      const tag = target.tagName;
+      return (
+        tag === 'INPUT' ||
+        tag === 'TEXTAREA' ||
+        tag === 'SELECT' ||
+        target.isContentEditable
+      );
+    };
+
+    const anyModalOpen =
+      showCreateServer ||
+      showDiscover ||
+      showSettings ||
+      showAdminPanel ||
+      showServerSettings ||
+      showCreateChannelModal ||
+      showInvitePreview;
+
+    const onKeyDown = (e: KeyboardEvent) => {
+      // Escape: close overlays / menus in priority order (capture phase)
+      if (e.key === 'Escape') {
+        if (showEmojiPicker !== null || showFullEmojiPicker !== null) {
+          e.preventDefault();
+          e.stopPropagation();
+          setShowEmojiPicker(null);
+          setShowFullEmojiPicker(null);
+          return;
+        }
+        if (contextMenu) {
+          e.preventDefault();
+          e.stopPropagation();
+          setContextMenu(null);
+          return;
+        }
+        if (msgContextMenu) {
+          e.preventDefault();
+          e.stopPropagation();
+          setMsgContextMenu(null);
+          return;
+        }
+        if (selectedProfile) {
+          e.preventDefault();
+          e.stopPropagation();
+          setSelectedProfile(null);
+          return;
+        }
+        if (showMentions) {
+          e.preventDefault();
+          e.stopPropagation();
+          setShowMentions(false);
+          return;
+        }
+        if (editingMessageId !== null) {
+          e.preventDefault();
+          e.stopPropagation();
+          setEditingMessageId(null);
+          setEditContent('');
+          inputRef.current?.focus();
+          return;
+        }
+        if (replyingTo) {
+          e.preventDefault();
+          e.stopPropagation();
+          setReplyingTo(null);
+          return;
+        }
+        if (attachmentFile) {
+          e.preventDefault();
+          e.stopPropagation();
+          setAttachmentFile(null);
+          setAttachmentPreview(null);
+          return;
+        }
+        // Nothing else open — blur the chat composer if it's focused
+        if (e.target === inputRef.current) {
+          e.preventDefault();
+          inputRef.current?.blur();
+        }
+        return;
+      }
+
+      // "/" focuses the message textbox (and inserts "/") when not typing elsewhere
+      if (
+        e.key === '/' &&
+        !e.ctrlKey &&
+        !e.metaKey &&
+        !e.altKey &&
+        !isEditableTarget(e.target) &&
+        !anyModalOpen &&
+        activeChannel &&
+        !muted &&
+        !editingMessageId
+      ) {
+        e.preventDefault();
+        const input = inputRef.current;
+        if (!input || input.disabled) return;
+        setChatInput((prev) => {
+          const next = prev + '/';
+          requestAnimationFrame(() => {
+            input.focus();
+            input.setSelectionRange(next.length, next.length);
+            input.style.height = 'auto';
+            input.style.height = Math.min(input.scrollHeight, 200) + 'px';
+          });
+          return next;
+        });
+        return;
+      }
+
+      // Up arrow (when not in an editable field): edit last own message if composer empty
+      if (
+        e.key === 'ArrowUp' &&
+        !e.shiftKey &&
+        !e.ctrlKey &&
+        !e.metaKey &&
+        !e.altKey &&
+        !isEditableTarget(e.target) &&
+        !anyModalOpen &&
+        activeChannel &&
+        !editingMessageId &&
+        !chatInput.trim()
+      ) {
+        const lastOwn = [...messages].reverse().find(
+          (m) => m.author_id === user?.user_id && !m.flags?.includes('DELETED')
+        );
+        if (lastOwn) {
+          e.preventDefault();
+          setEditingMessageId(lastOwn.message_id);
+          setEditContent(lastOwn.content?.text || '');
+          setTimeout(() => {
+            document.getElementById(`message-${lastOwn.message_id}`)?.scrollIntoView({
+              behavior: 'smooth',
+              block: 'center',
+            });
+          }, 50);
+        }
+      }
+    };
+
+    window.addEventListener('keydown', onKeyDown, true);
+    return () => window.removeEventListener('keydown', onKeyDown, true);
+  }, [
+    token,
+    showCreateServer,
+    showDiscover,
+    showSettings,
+    showAdminPanel,
+    showServerSettings,
+    showCreateChannelModal,
+    showInvitePreview,
+    showEmojiPicker,
+    showFullEmojiPicker,
+    contextMenu,
+    msgContextMenu,
+    selectedProfile,
+    showMentions,
+    editingMessageId,
+    replyingTo,
+    attachmentFile,
+    activeChannel,
+    chatInput,
+    messages,
+    user,
+  ]);
+
   if (user && user.status === 'BANNED') {
     return (
       <div style={{display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', height: '100vh', width: '100vw', position: 'fixed', top: 0, left: 0, zIndex: 9999, backgroundColor: 'var(--bg-main)', color: 'white'}}>
@@ -1748,7 +2005,7 @@ function App() {
                 </div>
                 <span style={{fontWeight: 500, flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap'}} title={dm.target_user?.username ? `@${dm.target_user.username}` : undefined}>{dm.target_user?.display_name || dm.target_user?.username || 'Unknown User'}</span>
                 {mentionCount > 0 && (
-                  <div className="mention-badge" style={{position: 'static', transform: 'none', marginLeft: 'auto', fontSize: '11px', padding: '0 4px', minWidth: '16px', height: '16px', lineHeight: '11px'}}>{mentionCount}</div>
+                  <div className="mention-badge" style={{position: 'static', transform: 'none', marginLeft: 'auto', fontSize: '11px', padding: '2px 6px', height: '16px', lineHeight: '12px', display: 'flex', alignItems: 'center', justifyContent: 'center'}}>{mentionCount}</div>
                 )}
               </div>
             )})
@@ -1846,7 +2103,7 @@ function App() {
             const canDelete = canEdit || (activeServer && currentUserRef.current?.user_id === activeServer.owner_id);
             
             return (
-            <div key={i} id={`message-${m.message_id}`} className={`message ${isMentioned ? 'mentioned' : ''} ${isDeleted ? 'deleted' : ''}`} style={{display: 'flex', gap: '16px', position: 'relative', flexDirection: 'column'}}>
+            <div key={m.message_id ?? i} id={`message-${m.message_id}`} className={`message ${isMentioned ? 'mentioned' : ''} ${isDeleted ? 'deleted' : ''}`} style={{display: 'flex', gap: '16px', position: 'relative', flexDirection: 'column'}}>
               {m.parent_message && (
                 <div 
                   className="inline-quote" 
@@ -2086,7 +2343,14 @@ function App() {
               </button>
             </div>
           )}
-          <form className="chat-input-box" onSubmit={sendMessage} style={{borderTopLeftRadius: replyingTo ? 0 : '8px', borderTopRightRadius: replyingTo ? 0 : '8px', position: 'relative'}}>
+          <form
+            className="chat-input-box"
+            onSubmit={(e) => {
+              // Never submit via form — only Enter (handleKeyDown) or the Send button
+              e.preventDefault();
+            }}
+            style={{borderTopLeftRadius: replyingTo ? 0 : '8px', borderTopRightRadius: replyingTo ? 0 : '8px', position: 'relative'}}
+          >
             {attachmentPreview && (
               <div className="attachment-preview" style={{position: 'absolute', bottom: 'calc(100% + 8px)', left: '0', padding: '12px', backgroundColor: 'var(--bg-panel)', borderRadius: '8px', border: '1px solid var(--border-subtle)', display: 'flex', alignItems: 'center', gap: '12px', boxShadow: 'var(--shadow-lift)'}}>
                 {(attachmentFile?.type?.startsWith('image/') || attachmentFile?.name?.match(/\.(jpeg|jpg|gif|png|webp|avif)$/i)) ? (
@@ -2119,7 +2383,13 @@ function App() {
               disabled={isMuted || !activeChannel || !ws || isSendingMessage}
               rows={1}
             />
-            <button type="submit" className="icon-btn" disabled={!activeChannel || (!chatInput.trim() && !attachmentFile) || !ws || isSendingMessage}>
+            {/* type=button so Enter only goes through handleKeyDown once, not keydown + form submit */}
+            <button
+              type="button"
+              className="icon-btn"
+              disabled={!activeChannel || (!chatInput.trim() && !attachmentFile) || !ws || isSendingMessage}
+              onClick={() => sendMessage()}
+            >
               <Send size={20} />
             </button>
           </form>
