@@ -1,11 +1,74 @@
 import React, { useState, useEffect, useRef } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
-import { Compass, Plus, Hash, LogOut, Send, Loader2, Settings, Users, Home, MessageSquare, Check, X, AlertTriangle, Pencil, Trash2, Reply, File as FileIcon, UploadCloud, Download, Hammer, Play, Pause, Smile } from 'lucide-react';
+import { Compass, Plus, Hash, LogOut, Send, Loader2, Settings, Users, Home, MessageSquare, Check, X, AlertTriangle, Pencil, Trash2, Reply, File as FileIcon, UploadCloud, Download, Hammer, Play, Pause, Smile, Pin } from 'lucide-react';
 import { useDropzone } from 'react-dropzone';
 import EmojiPicker, { Theme } from 'emoji-picker-react';
 
 const API_BASE = import.meta.env.VITE_API_BASE || (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1' ? "http://127.0.0.1:8000" : "");
+
+const SERVER_ORDER_KEY = 'cordis_server_order';
+const PINNED_SERVER_KEY = 'cordis_pinned_server';
+
+const loadServerOrder = (): number[] => {
+  try {
+    const raw = localStorage.getItem(SERVER_ORDER_KEY);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed.map(Number).filter((n) => Number.isFinite(n)) : [];
+  } catch {
+    return [];
+  }
+};
+
+const saveServerOrder = (ids: number[]) => {
+  localStorage.setItem(SERVER_ORDER_KEY, JSON.stringify(ids));
+};
+
+const loadPinnedServerId = (): number | null => {
+  const v = localStorage.getItem(PINNED_SERVER_KEY);
+  if (v === null || v === '') return null;
+  const n = Number(v);
+  return Number.isFinite(n) ? n : null;
+};
+
+const savePinnedServerId = (id: number | null) => {
+  if (id === null) localStorage.removeItem(PINNED_SERVER_KEY);
+  else localStorage.setItem(PINNED_SERVER_KEY, String(id));
+};
+
+const isGeneralServer = (s: any) =>
+  s?.invite_code === 'GLOBAL' || String(s?.server_name || '').toLowerCase() === 'general';
+
+const sortServersByOrder = (list: any[], order: number[]): any[] => {
+  const byId = new Map(list.map((s) => [s.server_id, s]));
+  const sorted: any[] = [];
+  for (const id of order) {
+    const s = byId.get(id);
+    if (s) {
+      sorted.push(s);
+      byId.delete(id);
+    }
+  }
+  for (const s of list) {
+    if (byId.has(s.server_id)) sorted.push(s);
+  }
+  return sorted;
+};
+
+const applyServerListOrder = (list: any[]): any[] => {
+  const ordered = sortServersByOrder(list, loadServerOrder());
+  saveServerOrder(ordered.map((s) => s.server_id));
+  return ordered;
+};
+
+const resolvePinnedServer = (list: any[], preferredId: number | null): any | null => {
+  if (preferredId != null) {
+    const found = list.find((s) => s.server_id === preferredId);
+    if (found) return found;
+  }
+  return list.find(isGeneralServer) || list[0] || null;
+};
 
 const getFullUrl = (url: string | undefined | null) => {
   if (!url) return '';
@@ -336,7 +399,7 @@ function App() {
   }, [attachmentFile]);
 
   const [isSendingMessage, setIsSendingMessage] = useState(false);
-  const isSendingRef = useRef(false); // sync lock — state alone is too slow to prevent double-send
+  const isSendingRef = useRef(false);
   const [editingMessageId, setEditingMessageId] = useState<number | null>(null);
   const [editContent, setEditContent] = useState('');
   const [typingUsers, setTypingUsers] = useState<Record<number, string>>({});
@@ -493,14 +556,48 @@ function App() {
       });
       if (res.ok) {
         const data = await res.json();
-        setServers(data);
-        if (data.length > 0 && !activeServer) {
-          selectServer(data[0]);
+        const ordered = applyServerListOrder(data);
+        setServers(ordered);
+        if (!hasAppliedStartupNavRef.current && ordered.length > 0) {
+          hasAppliedStartupNavRef.current = true;
+          const home = resolvePinnedServer(ordered, pinnedServerId);
+          if (home) selectServer(home);
         }
       }
     } finally {
       setIsLoadingServers(false);
     }
+  };
+
+  const getEffectivePinnedServerId = (list: any[] = servers): number | null => {
+    const preferred = resolvePinnedServer(list, pinnedServerId);
+    return preferred?.server_id ?? null;
+  };
+
+  const pinServer = (server: any) => {
+    setPinnedServerId(server.server_id);
+    savePinnedServerId(server.server_id);
+    setServerContextMenu(null);
+  };
+
+  const unpinServer = () => {
+    setPinnedServerId(null);
+    savePinnedServerId(null);
+    setServerContextMenu(null);
+  };
+
+  const reorderServers = (fromId: number, toId: number) => {
+    if (fromId === toId) return;
+    setServers((prev) => {
+      const next = [...prev];
+      const fromIdx = next.findIndex((s) => s.server_id === fromId);
+      const toIdx = next.findIndex((s) => s.server_id === toId);
+      if (fromIdx < 0 || toIdx < 0) return prev;
+      const [item] = next.splice(fromIdx, 1);
+      next.splice(toIdx, 0, item);
+      saveServerOrder(next.map((s) => s.server_id));
+      return next;
+    });
   };
 
 
@@ -752,7 +849,6 @@ function App() {
         }
       } else {
         if (data.channel_id === activeChannelRef.current?.channel_id) {
-          // Dedupe if the same message arrives twice (e.g. dual WS connections)
           setMessages(prev =>
             prev.some(msg => msg.message_id === data.message_id) ? prev : [...prev, data]
           );
@@ -872,6 +968,7 @@ function App() {
     setActiveChannel(null);
     setMessages([]);
     setTypingUsers({});
+    hasAppliedStartupNavRef.current = false;
     if (ws) ws.close();
     setWs(null);
   };
@@ -931,7 +1028,6 @@ function App() {
         }));
       }
     } finally {
-      // Keep the latch for a short window so late form-submit / double-Enter cannot re-send
       window.setTimeout(() => {
         isSendingRef.current = false;
         setIsSendingMessage(false);
@@ -1061,7 +1157,6 @@ function App() {
       }
     }
 
-    // Empty input + Up arrow → edit last message you sent (Discord-style)
     if (e.key === 'ArrowUp' && !e.shiftKey && !e.ctrlKey && !e.metaKey && !e.altKey) {
       const el = e.currentTarget;
       const caretAtStart = (el.selectionStart ?? 0) === 0 && (el.selectionEnd ?? 0) === 0;
@@ -1072,13 +1167,9 @@ function App() {
       }
     }
 
-    // Escape for reply/attachment/blur is handled by the global keydown listener
-    // so emoji pickers, context menus, etc. take priority.
-
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
       e.stopPropagation();
-      // Only send path for keyboard — form does not submit on Enter
       if (!e.repeat) {
         sendMessage();
       }
@@ -1442,7 +1533,7 @@ function App() {
           headers: { Authorization: `Bearer ${token}` }
         });
         if (serversRes.ok) {
-          const serversData = await serversRes.json();
+          const serversData = applyServerListOrder(await serversRes.json());
           setServers(serversData);
           const newlyJoined = serversData.find((s: any) => s.invite_code === joinInviteCode.trim());
           if (newlyJoined) {
@@ -1517,7 +1608,7 @@ function App() {
           headers: { Authorization: `Bearer ${token}` }
         });
         if (sRes.ok) {
-          const serversData = await sRes.json();
+          const serversData = applyServerListOrder(await sRes.json());
           setServers(serversData);
           const newlyJoined = serversData.find((s: any) => s.invite_code === pendingInviteCode);
           if (newlyJoined) {
@@ -1588,7 +1679,6 @@ function App() {
     );
   };
 
-  // Global shortcuts must be registered before any early returns (Rules of Hooks)
   useEffect(() => {
     if (!token) return;
 
@@ -1615,7 +1705,6 @@ function App() {
       showInvitePreview;
 
     const onKeyDown = (e: KeyboardEvent) => {
-      // Escape: close overlays / menus in priority order (capture phase)
       if (e.key === 'Escape') {
         if (showEmojiPicker !== null || showFullEmojiPicker !== null) {
           e.preventDefault();
@@ -1628,6 +1717,12 @@ function App() {
           e.preventDefault();
           e.stopPropagation();
           setContextMenu(null);
+          return;
+        }
+        if (serverContextMenu) {
+          e.preventDefault();
+          e.stopPropagation();
+          setServerContextMenu(null);
           return;
         }
         if (msgContextMenu) {
@@ -1741,7 +1836,6 @@ function App() {
         return;
       }
 
-      // Up arrow (when not in an editable field): edit last own message if composer empty
       if (
         e.key === 'ArrowUp' &&
         !e.shiftKey &&
@@ -1785,6 +1879,7 @@ function App() {
     showEmojiPicker,
     showFullEmojiPicker,
     contextMenu,
+    serverContextMenu,
     msgContextMenu,
     selectedProfile,
     showMentions,
@@ -1895,6 +1990,7 @@ function App() {
   });
 
   const isMuted = user && user.muted_until && (user.muted_until * 1000) > Date.now();
+  const effectivePinnedServerId = getEffectivePinnedServerId(servers);
 
   return (
     <div
@@ -1945,14 +2041,70 @@ function App() {
             <div className="skeleton skeleton-icon"></div>
           </>
         ) : (
-          servers.map(s => (
-            <div key={s.server_id} className={`server-icon ${activeServer?.server_id === s.server_id ? 'active' : ''}`} onClick={() => selectServer(s)} data-tooltip={s.server_name}>
+          servers.map(s => {
+            const isPinned = effectivePinnedServerId === s.server_id;
+            const isDragging = dragServerId === s.server_id;
+            const isDragOver = dragOverServerId === s.server_id && dragServerId !== s.server_id;
+            return (
+            <div
+              key={s.server_id}
+              className={`server-icon ${activeServer?.server_id === s.server_id ? 'active' : ''} ${isDragging ? 'dragging' : ''} ${isDragOver ? 'drag-over' : ''} ${isPinned ? 'pinned' : ''}`}
+              draggable
+              onDragStart={(e) => {
+                serverDragMovedRef.current = false;
+                setDragServerId(s.server_id);
+                e.dataTransfer.effectAllowed = 'move';
+                e.dataTransfer.setData('text/plain', String(s.server_id));
+                try {
+                  e.dataTransfer.setDragImage(e.currentTarget, 24, 24);
+                } catch {}
+              }}
+              onDragOver={(e) => {
+                e.preventDefault();
+                e.dataTransfer.dropEffect = 'move';
+                if (dragOverServerId !== s.server_id) setDragOverServerId(s.server_id);
+              }}
+              onDragLeave={() => {
+                if (dragOverServerId === s.server_id) setDragOverServerId(null);
+              }}
+              onDrop={(e) => {
+                e.preventDefault();
+                const fromId = Number(e.dataTransfer.getData('text/plain') || dragServerId);
+                if (Number.isFinite(fromId)) {
+                  serverDragMovedRef.current = true;
+                  reorderServers(fromId, s.server_id);
+                }
+                setDragServerId(null);
+                setDragOverServerId(null);
+              }}
+              onDragEnd={() => {
+                setDragServerId(null);
+                setDragOverServerId(null);
+                window.setTimeout(() => { serverDragMovedRef.current = false; }, 0);
+              }}
+              onClick={() => {
+                if (serverDragMovedRef.current) return;
+                selectServer(s);
+              }}
+              onContextMenu={(e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                setServerContextMenu({ x: e.pageX, y: e.pageY, server: s });
+              }}
+              data-tooltip={isPinned ? `${s.server_name} (pinned)` : s.server_name}
+            >
               {activeServer?.server_id === s.server_id && <div className="active-pill" />}
               {activeServer?.server_id !== s.server_id && serverUnreadStatus[s.server_id] && <div className="unread-dot" />}
               {getServerIconContent(s)}
+              {isPinned && (
+                <div className="server-pin-badge" title="Opens on launch">
+                  <Pin size={10} />
+                </div>
+              )}
               {serverMentionCount[s.server_id] > 0 && <div className="mention-badge">{serverMentionCount[s.server_id]}</div>}
             </div>
-          ))
+            );
+          })
         )}
         <div className="server-separator" />
         <div className="server-icon action" onClick={() => setShowCreateServer(true)} data-tooltip="Create Server">
@@ -2408,7 +2560,6 @@ function App() {
               disabled={isMuted || !activeChannel || !ws || isSendingMessage}
               rows={1}
             />
-            {/* type=button so Enter only goes through handleKeyDown once, not keydown + form submit */}
             <button
               type="button"
               className="icon-btn"
@@ -2564,6 +2715,58 @@ function App() {
             )}
           </div>
         </div>
+      )}
+
+      {serverContextMenu && (
+        <>
+          <div
+            style={{ position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, zIndex: 99999 }}
+            onClick={() => setServerContextMenu(null)}
+            onContextMenu={(e) => { e.preventDefault(); setServerContextMenu(null); }}
+          />
+          <div
+            style={{
+              position: 'fixed',
+              top: Math.min(serverContextMenu.y, window.innerHeight - 120),
+              left: Math.min(serverContextMenu.x, window.innerWidth - 200),
+              zIndex: 100000,
+              backgroundColor: 'var(--bg-card)',
+              borderRadius: '8px',
+              padding: '8px',
+              boxShadow: 'var(--shadow-lift)',
+              minWidth: '180px',
+              border: '1px solid var(--border-subtle)',
+            }}
+          >
+            <div style={{ padding: '4px 8px', fontSize: '13px', fontWeight: 600, color: 'var(--text-muted)', borderBottom: '1px solid var(--border-subtle)', marginBottom: '4px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+              {serverContextMenu.server.server_name}
+            </div>
+            {effectivePinnedServerId === serverContextMenu.server.server_id ? (
+              <>
+                <div className="dropdown-item" style={{ cursor: 'default', opacity: 0.75, backgroundColor: 'transparent', display: 'flex', alignItems: 'center', gap: '8px' }}>
+                  <Pin size={14} /> Opens on launch
+                </div>
+                {!isGeneralServer(serverContextMenu.server) && (
+                  <button className="dropdown-item" onClick={unpinServer}>
+                    Unpin (use General)
+                  </button>
+                )}
+                {isGeneralServer(serverContextMenu.server) && (
+                  <div className="dropdown-item" style={{ cursor: 'default', opacity: 0.6, backgroundColor: 'transparent', fontSize: '12px' }}>
+                    General is pinned by default
+                  </div>
+                )}
+              </>
+            ) : (
+              <button className="dropdown-item" onClick={() => pinServer(serverContextMenu.server)} style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                <Pin size={14} /> Pin server
+              </button>
+            )}
+            <button className="dropdown-item" onClick={() => { selectServer(serverContextMenu.server); setServerContextMenu(null); }}>
+              Open
+            </button>
+          </div>
+        </>
       )}
 
       {/* Context Menu */}
