@@ -6,6 +6,7 @@ class DBUser(Base):
 
     user_id = Column(Integer, primary_key=True, index=True, autoincrement=True)
     username = Column(String, unique=True, index=True)
+    display_name = Column(String)
     hashed_password = Column(String)
     permissions = Column(JSON)
     status = Column(String)
@@ -13,6 +14,7 @@ class DBUser(Base):
     profile_picture = Column(String)
     banner = Column(String)
     last_active_at = Column(Integer, nullable=True)
+    muted_until = Column(Integer, nullable=True)
 
 class DBServer(Base):
     __tablename__ = "servers"

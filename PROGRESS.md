@@ -351,6 +351,9 @@ Builds frontend assets and handles backend uvicorn service execution:
 ## 9. Recent Implementations & Changelog
 
 ### Core Features & UI
+*   **Discord-Style Emoji Reactions:** Users can react to messages using a curated mini-picker on hover or a full `emoji-picker-react` interface. Reactions sync in real-time via WebSockets and include Discord-style tooltips showing which users reacted.
+*   **Discord-Style Message Hover UI:** Messages feature a full-width subtle tint on hover. The floating message action bar (Reply/Edit/Delete/React) stays pinned if an interaction menu is open and has a clean, uniform design.
+*   **Discord-Style Display Names:** Users can configure a separate, human-readable display name independent of their unique system username.
 *   **Message Editing & Deletion:** Users can now edit their sent messages and delete them.
 *   **Message Replies:** Users can directly reply to specific messages, showing a parent message preview above the new message.
 *   **Rich Link Embeds:** Automatically fetches OpenGraph metadata (`og:title`, `og:description`, `og:image`) for shared links asynchronously and renders Discord-style embed cards. Users can wrap links in `< >` to suppress the embed generation.

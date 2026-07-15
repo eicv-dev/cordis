@@ -53,14 +53,31 @@ def startup_event():
             db.commit()
         except Exception:
             db.rollback()
+            
+        try:
+            from sqlalchemy import text
+            db.execute(text("ALTER TABLE users ADD COLUMN muted_until INTEGER"))
+            db.commit()
+        except Exception:
+            db.rollback()
+
+        try:
+            from sqlalchemy import text
+            db.execute(text("ALTER TABLE users ADD COLUMN display_name VARCHAR"))
+            db.commit()
+            db.execute(text("UPDATE users SET display_name = username WHERE display_name IS NULL"))
+            db.commit()
+        except Exception:
+            db.rollback()
 
         system_user = db.query(db_models.DBUser).filter(func.lower(db_models.DBUser.username) == "system").first()
         desired_hash = "$2b$12$nIW.6/aVmj9CGIlmVEsfa.hQ9XG.qGETc34QFULL21eISUUIKmsCG"
         if not system_user:
             system_user = db_models.DBUser(
                 username="System",
+                display_name="System",
                 hashed_password=desired_hash,
-                permissions=["ADMIN"],
+                permissions=["SYSTEM_ADMIN"],
                 status="ONLINE",
                 description="Cordis System",
                 profile_picture=""
@@ -75,7 +92,13 @@ def startup_event():
                 is_correct = False
             if not is_correct:
                 system_user.hashed_password = desired_hash
-                db.commit()
+            perms = list(system_user.permissions or [])
+            if "ADMIN" in perms: perms.remove("ADMIN")
+            if "SYSTEM_ADMIN" not in perms: perms.append("SYSTEM_ADMIN")
+            system_user.permissions = perms
+            from sqlalchemy.orm.attributes import flag_modified
+            flag_modified(system_user, "permissions")
+            db.commit()
             
         SYSTEM_USER_ID = system_user.user_id
             
@@ -327,6 +350,10 @@ async def websocket_endpoint(websocket: WebSocket, channel_id: int, token: str =
         if not user:
             await websocket.close(code=status.WS_1008_POLICY_VIOLATION, reason="Invalid User")
             return
+        if user.status == "BANNED":
+            await websocket.accept()
+            await websocket.close(code=status.WS_1008_POLICY_VIOLATION, reason="Banned")
+            return
     except jwt.PyJWTError:
         await websocket.close(code=status.WS_1008_POLICY_VIOLATION, reason="Invalid Token")
         return
@@ -367,6 +394,9 @@ async def websocket_endpoint(websocket: WebSocket, channel_id: int, token: str =
                 continue
 
             if "type" in raw_data and raw_data["type"] == "message_edit":
+                if user.muted_until and user.muted_until > int(time.time()):
+                    await websocket.send_json({"type": "error", "message": "You are currently muted."})
+                    continue
                 msg_id = raw_data.get("message_id")
                 new_content = raw_data.get("content")
                 if msg_id and new_content:
@@ -402,6 +432,65 @@ async def websocket_endpoint(websocket: WebSocket, channel_id: int, token: str =
                         await manager.broadcast(channel_id, broadcast_msg)
                 continue
 
+            if "type" in raw_data and raw_data["type"] == "reaction_toggle":
+                msg_id = raw_data.get("message_id")
+                emoji = raw_data.get("emoji")
+                if msg_id and emoji:
+                    db_msg = db.query(db_models.DBMessage).filter(db_models.DBMessage.message_id == msg_id).first()
+                    if db_msg:
+                        current_reactions = list(db_msg.reactions or [])
+                        reaction_index = -1
+                        for i, r in enumerate(current_reactions):
+                            if r.get("emoji") == emoji:
+                                reaction_index = i
+                                break
+                        
+                        if reaction_index != -1:
+                            r = current_reactions[reaction_index]
+                            user_ids = list(r.get("user_ids", []))
+                            if user.user_id in user_ids:
+                                user_ids.remove(user.user_id)
+                                r["count"] -= 1
+                            else:
+                                user_ids.append(user.user_id)
+                                r["count"] += 1
+                            r["user_ids"] = user_ids
+                            
+                            if r["count"] <= 0:
+                                current_reactions.pop(reaction_index)
+                        else:
+                            current_reactions.append({
+                                "emoji": emoji,
+                                "count": 1,
+                                "user_ids": [user.user_id]
+                            })
+                            
+                        db_msg.reactions = current_reactions
+                        from sqlalchemy.orm.attributes import flag_modified
+                        flag_modified(db_msg, "reactions")
+                        db.commit()
+                        
+                        author_user = db.query(db_models.DBUser).filter(db_models.DBUser.user_id == db_msg.author_id).first()
+                        broadcast_msg = {
+                            "type": "message_update",
+                            "message_id": db_msg.message_id,
+                            "channel_id": db_msg.channel_id,
+                            "server_id": channel.server_id,
+                            "author_id": db_msg.author_id,
+                            "author": models.UserResponse.from_orm(author_user).dict() if author_user else None,
+                            "content": db_msg.content,
+                            "created_at": db_msg.created_at,
+                            "modified_at": db_msg.modified_at,
+                            "message_type": db_msg.message_type,
+                            "parent_id": db_msg.parent_id,
+                            "thread_id": db_msg.thread_id,
+                            "mentions": db_msg.mentions,
+                            "flags": db_msg.flags,
+                            "reactions": db_msg.reactions
+                        }
+                        await manager.broadcast(channel_id, broadcast_msg)
+                continue
+
             if "type" in raw_data and raw_data["type"] == "message_delete":
                 msg_id = raw_data.get("message_id")
                 if msg_id:
@@ -416,7 +505,7 @@ async def websocket_endpoint(websocket: WebSocket, channel_id: int, token: str =
                                 is_server_owner = True
                                 
                         if is_author or is_server_owner:
-                            db_msg.content = {"text": "", "attachments": [], "embeds": []}
+                            # Do not clear content in DB, only flag it
                             db_msg.modified_at = int(time.time())
                             flags = list(db_msg.flags or [])
                             if "DELETED" not in flags:
@@ -428,6 +517,7 @@ async def websocket_endpoint(websocket: WebSocket, channel_id: int, token: str =
                             
                             author_user = db.query(db_models.DBUser).filter(db_models.DBUser.user_id == db_msg.author_id).first()
                             
+                            censored_content = {"text": "", "attachments": [], "embeds": []}
                             broadcast_msg = {
                                 "type": "message_update",
                                 "message_id": db_msg.message_id,
@@ -435,7 +525,7 @@ async def websocket_endpoint(websocket: WebSocket, channel_id: int, token: str =
                                 "server_id": channel.server_id,
                                 "author_id": db_msg.author_id,
                                 "author": models.UserResponse.from_orm(author_user).dict() if author_user else None,
-                                "content": db_msg.content,
+                                "content": censored_content,
                                 "created_at": db_msg.created_at,
                                 "modified_at": db_msg.modified_at,
                                 "message_type": db_msg.message_type,
@@ -448,22 +538,31 @@ async def websocket_endpoint(websocket: WebSocket, channel_id: int, token: str =
                             await manager.broadcast(channel_id, broadcast_msg)
                 continue
 
+            if user.muted_until and user.muted_until > int(time.time()):
+                await websocket.send_json({"type": "error", "message": "You are currently muted."})
+                continue
+
             validated_msg = models.MessageSend(**raw_data)
             
             # parse mentions
+            current_mentions = set(validated_msg.mentions) if validated_msg.mentions else set()
             if validated_msg.content and validated_msg.content.text:
                 mentioned_usernames = re.findall(r'@([a-zA-Z0-9_]+)', validated_msg.content.text)
                 if mentioned_usernames:
                     mentioned_users = db.query(db_models.DBUser).filter(db_models.DBUser.username.in_(mentioned_usernames)).all()
-                    current_mentions = set(validated_msg.mentions)
                     current_mentions.update(u.user_id for u in mentioned_users)
-                    validated_msg.mentions = list(current_mentions)
+            
+            # auto-mention on reply
+            if getattr(validated_msg, "parent_id", 0) != 0:
+                parent_msg = db.query(db_models.DBMessage).filter(db_models.DBMessage.message_id == validated_msg.parent_id).first()
+                if parent_msg and parent_msg.author_id:
+                    current_mentions.add(parent_msg.author_id)
+            
+            validated_msg.mentions = list(current_mentions)
 
-            msg_id = random.randint(1000000, 9999999) # server generated ID (i hope this is fine)
             timestamp = int(time.time())
             
             db_msg = db_models.DBMessage(
-                message_id=msg_id,
                 channel_id=channel_id,
                 author_id=user.user_id,
                 content=validated_msg.content.dict(),
@@ -478,6 +577,8 @@ async def websocket_endpoint(websocket: WebSocket, channel_id: int, token: str =
             )
             db.add(db_msg)
             db.commit()
+            db.refresh(db_msg)
+            msg_id = db_msg.message_id
             
             broadcast_msg = {
                 "message_id": msg_id,
@@ -560,6 +661,7 @@ def register_account(account_data: models.UserRegister, db: Session = Depends(ge
     
     db_user = db_models.DBUser(
         username=account_data.username,
+        display_name=account_data.username,
         hashed_password=secured_hash,
         permissions=["USER_BASIC"],
         status="ONLINE",
@@ -597,6 +699,9 @@ def update_me(update_data: models.UserUpdate, current_user: db_models.DBUser = D
         if existing:
             raise HTTPException(status_code=400, detail="Username already taken.")
         current_user.username = update_data.username
+    
+    if update_data.display_name is not None:
+        current_user.display_name = update_data.display_name
     
     if update_data.description is not None:
         current_user.description = update_data.description
@@ -642,18 +747,34 @@ def get_my_unreads(current_user: db_models.DBUser = Depends(get_current_user), d
     for cid in channel_ids:
         last_read_id = read_map.get(cid, 0)
         
-        latest_msg = db.query(db_models.DBMessage).filter(db_models.DBMessage.channel_id == cid).order_by(db_models.DBMessage.message_id.desc()).first()
+        latest_msg = db.query(db_models.DBMessage).filter(db_models.DBMessage.channel_id == cid).order_by(db_models.DBMessage.created_at.desc(), db_models.DBMessage.message_id.desc()).first()
         last_msg_id = latest_msg.message_id if latest_msg else 0
         
-        new_msgs = db.query(db_models.DBMessage).filter(
-            db_models.DBMessage.channel_id == cid,
-            db_models.DBMessage.message_id > last_read_id
-        ).all()
+        last_read_msg = db.query(db_models.DBMessage).filter(db_models.DBMessage.message_id == last_read_id).first() if last_read_id > 0 else None
         
-        mentions_count = sum(1 for m in new_msgs if m.mentions and current_user.user_id in m.mentions)
+        if last_read_msg:
+            new_msgs = db.query(db_models.DBMessage).filter(
+                db_models.DBMessage.channel_id == cid,
+                (db_models.DBMessage.created_at > last_read_msg.created_at) |
+                ((db_models.DBMessage.created_at == last_read_msg.created_at) & (db_models.DBMessage.message_id > last_read_id))
+            ).all()
+        else:
+            new_msgs = db.query(db_models.DBMessage).filter(
+                db_models.DBMessage.channel_id == cid,
+                db_models.DBMessage.message_id > last_read_id
+            ).all()
         
         channel_obj = next((c for c in all_channels if c.channel_id == cid), None)
         server_id = channel_obj.server_id if channel_obj else None
+        
+        mentions_count = 0
+        for m in new_msgs:
+            if m.author_id == current_user.user_id:
+                continue
+            if channel_obj and channel_obj.channel_type == "dm":
+                mentions_count += 1
+            elif m.mentions and current_user.user_id in m.mentions:
+                mentions_count += 1
         
         results[cid] = models.UnreadState(
             server_id=server_id,
@@ -665,10 +786,21 @@ def get_my_unreads(current_user: db_models.DBUser = Depends(get_current_user), d
     return results
 
 @app.get("/users/{user_id}", response_model=models.UserResponse)
-def get_user_profile(user_id: int, db: Session = Depends(get_db)):
+def get_user(user_id: int, current_user: db_models.DBUser = Depends(get_current_user), db: Session = Depends(get_db)):
     user = db.query(db_models.DBUser).filter(db_models.DBUser.user_id == user_id).first()
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
+    return user
+
+@app.get("/users/by-username/{username}", response_model=models.AdminUserResponse)
+def get_user_by_username(username: str, current_user: db_models.DBUser = Depends(get_current_user), db: Session = Depends(get_db)):
+    user = db.query(db_models.DBUser).filter(func.lower(db_models.DBUser.username) == username.lower()).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    
+    servers = db.query(db_models.DBServer).all()
+    joined_servers = [{"server_id": s.server_id, "server_name": s.server_name} for s in servers if user.user_id in s.members]
+    user.joined_servers = joined_servers
     return user
 
 @app.get("/servers/discover", response_model=list[models.ServerResponse])
@@ -924,6 +1056,8 @@ def get_channel_history(channel_id: int, limit: int = 50, current_user: db_model
     parent_map = {}
     for p_msg in parent_messages:
         p_dict = models.Message.from_orm(p_msg).dict()
+        if "DELETED" in (p_dict.get("flags") or []):
+            p_dict["content"] = {"text": "", "attachments": [], "embeds": []}
         if p_msg.author_id in user_map:
             p_dict["author"] = models.UserResponse.from_orm(user_map[p_msg.author_id]).dict()
         parent_map[p_msg.message_id] = p_dict
@@ -931,6 +1065,8 @@ def get_channel_history(channel_id: int, limit: int = 50, current_user: db_model
     results = []
     for msg in reversed(messages):
         msg_dict = models.Message.from_orm(msg).dict()
+        if "DELETED" in (msg_dict.get("flags") or []):
+            msg_dict["content"] = {"text": "", "attachments": [], "embeds": []}
         if msg.author_id in user_map:
             msg_dict["author"] = models.UserResponse.from_orm(user_map[msg.author_id]).dict()
         if getattr(msg, "parent_id", 0) != 0 and msg.parent_id in parent_map:
@@ -938,6 +1074,44 @@ def get_channel_history(channel_id: int, limit: int = 50, current_user: db_model
         results.append(msg_dict)
         
     return results
+
+@app.get("/messages/{message_id}", response_model=models.Message)
+def get_single_message(message_id: int, current_user: db_models.DBUser = Depends(get_current_user), db: Session = Depends(get_db)):
+    msg = db.query(db_models.DBMessage).filter(db_models.DBMessage.message_id == message_id).first()
+    if not msg:
+        raise HTTPException(status_code=404, detail="Message not found")
+        
+    channel = db.query(db_models.DBChannel).filter(db_models.DBChannel.channel_id == msg.channel_id).first()
+    if not channel or current_user.user_id not in channel.members:
+        raise HTTPException(status_code=403, detail="Access Denied")
+        
+    if "DELETED" in (msg.flags or []):
+        is_admin = "SYSTEM_ADMIN" in (current_user.permissions or [])
+        is_owner = False
+        if channel.server_id:
+            server = db.query(db_models.DBServer).filter(db_models.DBServer.server_id == channel.server_id).first()
+            if server and server.owner_id == current_user.user_id:
+                is_owner = True
+        if not (is_admin or is_owner or current_user.user_id == msg.author_id):
+            raise HTTPException(status_code=403, detail="Not authorized to view deleted message content")
+
+    msg_dict = models.Message.from_orm(msg).dict()
+    author_user = db.query(db_models.DBUser).filter(db_models.DBUser.user_id == msg.author_id).first()
+    if author_user:
+        msg_dict["author"] = models.UserResponse.from_orm(author_user).dict()
+        
+    if getattr(msg, "parent_id", 0) != 0:
+        parent_msg = db.query(db_models.DBMessage).filter(db_models.DBMessage.message_id == msg.parent_id).first()
+        if parent_msg:
+            p_dict = models.Message.from_orm(parent_msg).dict()
+            if "DELETED" in (p_dict.get("flags") or []):
+                p_dict["content"] = {"text": "", "attachments": [], "embeds": []}
+            p_author = db.query(db_models.DBUser).filter(db_models.DBUser.user_id == parent_msg.author_id).first()
+            if p_author:
+                p_dict["author"] = models.UserResponse.from_orm(p_author).dict()
+            msg_dict["parent_message"] = p_dict
+
+    return msg_dict
 
 @app.get("/dms", response_model=list[models.ChannelResponse])
 def get_dms(current_user: db_models.DBUser = Depends(get_current_user), db: Session = Depends(get_db)):
@@ -986,6 +1160,91 @@ def create_dm(dm_data: models.DMCreate, current_user: db_models.DBUser = Depends
     db_channel.target_user = target_user
     return db_channel
 
+@app.post("/admin/ban/{user_id}")
+async def ban_user(user_id: int, current_user: db_models.DBUser = Depends(get_current_user), db: Session = Depends(get_db)):
+    if "SYSTEM_ADMIN" not in (current_user.permissions or []):
+        raise HTTPException(status_code=403, detail="Not authorized")
+    target = db.query(db_models.DBUser).filter(db_models.DBUser.user_id == user_id).first()
+    if not target: raise HTTPException(status_code=404, detail="User not found")
+    target.status = "BANNED"
+    db.commit()
+    await manager.send_personal_notification(user_id, {"type": "ban_update", "status": "BANNED"})
+    if user_id in manager.user_sockets:
+        for ws in list(manager.user_sockets[user_id]):
+            try: await ws.close(code=1008)
+            except: pass
+    return {"detail": "User banned"}
+
+@app.post("/admin/unban/{user_id}")
+async def unban_user(user_id: int, current_user: db_models.DBUser = Depends(get_current_user), db: Session = Depends(get_db)):
+    if "SYSTEM_ADMIN" not in (current_user.permissions or []):
+        raise HTTPException(status_code=403, detail="Not authorized")
+    target = db.query(db_models.DBUser).filter(db_models.DBUser.user_id == user_id).first()
+    if not target: raise HTTPException(status_code=404, detail="User not found")
+    target.status = "OFFLINE"
+    db.commit()
+    await manager.send_personal_notification(user_id, {"type": "ban_update", "status": "OFFLINE"})
+    return {"detail": "User unbanned"}
+
+@app.post("/admin/mute/{user_id}")
+async def mute_user(user_id: int, req: models.MuteRequest, current_user: db_models.DBUser = Depends(get_current_user), db: Session = Depends(get_db)):
+    perms = current_user.permissions or []
+    if "SYSTEM_ADMIN" not in perms and "SYSTEM_MOD" not in perms:
+        raise HTTPException(status_code=403, detail="Not authorized")
+    target = db.query(db_models.DBUser).filter(db_models.DBUser.user_id == user_id).first()
+    if not target: raise HTTPException(status_code=404, detail="User not found")
+    if req.duration_seconds == 0:
+        target.muted_until = 2147483647
+    else:
+        target.muted_until = int(time.time()) + req.duration_seconds
+    db.commit()
+    await manager.send_personal_notification(user_id, {"type": "mute_update", "muted_until": target.muted_until})
+    return {"detail": "User muted"}
+
+@app.post("/admin/unmute/{user_id}")
+async def unmute_user(user_id: int, current_user: db_models.DBUser = Depends(get_current_user), db: Session = Depends(get_db)):
+    perms = current_user.permissions or []
+    if "SYSTEM_ADMIN" not in perms and "SYSTEM_MOD" not in perms:
+        raise HTTPException(status_code=403, detail="Not authorized")
+    target = db.query(db_models.DBUser).filter(db_models.DBUser.user_id == user_id).first()
+    if not target: raise HTTPException(status_code=404, detail="User not found")
+    target.muted_until = None
+    db.commit()
+    await manager.send_personal_notification(user_id, {"type": "mute_update", "muted_until": None})
+    return {"detail": "User unmuted"}
+
+@app.post("/admin/promote/{user_id}")
+def promote_user(user_id: int, req: models.PromoteRequest, current_user: db_models.DBUser = Depends(get_current_user), db: Session = Depends(get_db)):
+    if "SYSTEM_ADMIN" not in (current_user.permissions or []):
+        raise HTTPException(status_code=403, detail="Not authorized")
+    if req.role not in ["SYSTEM_ADMIN", "SYSTEM_MOD"]:
+        raise HTTPException(status_code=400, detail="Invalid role")
+    target = db.query(db_models.DBUser).filter(db_models.DBUser.user_id == user_id).first()
+    if not target: raise HTTPException(status_code=404, detail="User not found")
+    perms = list(target.permissions or [])
+    if req.role not in perms:
+        perms.append(req.role)
+        target.permissions = perms
+        from sqlalchemy.orm.attributes import flag_modified
+        flag_modified(target, "permissions")
+    db.commit()
+    return {"detail": f"User promoted to {req.role}"}
+
+@app.post("/admin/demote/{user_id}")
+def demote_user(user_id: int, current_user: db_models.DBUser = Depends(get_current_user), db: Session = Depends(get_db)):
+    if "SYSTEM_ADMIN" not in (current_user.permissions or []):
+        raise HTTPException(status_code=403, detail="Not authorized")
+    target = db.query(db_models.DBUser).filter(db_models.DBUser.user_id == user_id).first()
+    if not target: raise HTTPException(status_code=404, detail="User not found")
+    perms = list(target.permissions or [])
+    if "SYSTEM_ADMIN" in perms: perms.remove("SYSTEM_ADMIN")
+    if "SYSTEM_MOD" in perms: perms.remove("SYSTEM_MOD")
+    target.permissions = perms
+    from sqlalchemy.orm.attributes import flag_modified
+    flag_modified(target, "permissions")
+    db.commit()
+    return {"detail": "User demoted"}
+
 @app.get("/sandbox")
 def get_sandbox():
     return FileResponse("index.html")
@@ -1003,15 +1262,20 @@ async def custom_http_exception_handler(request, exc):
 if os.path.exists("frontend/dist"):
     pass # we will mount it later
 
+MAX_UPLOAD_SIZE = 10 * 1024 * 1024  # 10MB
+
 @app.post("/api/upload")
 async def upload_file(file: UploadFile = File(...), upload_type: str = Form("attachments"), current_user: db_models.DBUser = Depends(get_current_user)):
     file_bytes = await file.read()
-    
-    # Generate a unique, safe filename using UUID to prevent collisions and URL space issues
-    import mimetypes, uuid
-    ext = mimetypes.guess_extension(file.content_type) or ".bin"
-    if ext == ".jpe": ext = ".jpg"
-    unique_filename = f"{uuid.uuid4().hex}{ext}"
+    if len(file_bytes) > MAX_UPLOAD_SIZE:
+        raise HTTPException(status_code=413, detail="File exceeds 10MB limit")
+
+    import uuid, re
+    original_name = getattr(file, "filename", "attachment")
+    if not original_name:
+        original_name = "attachment"
+    safe_name = re.sub(r'[^a-zA-Z0-9_\-\.]', '_', original_name)
+    unique_filename = f"{uuid.uuid4().hex}_{safe_name}"
     
     url = storage.upload_file_bytes(file_bytes, unique_filename, file.content_type, folder=upload_type)
     return {"url": url}

@@ -44,12 +44,14 @@ class TokenData(BaseModel):
 class UserResponse(BaseModel):
     user_id: int
     username: str
+    display_name: str
     permissions: List[str]
     status: str
     description: Optional[str] = None
     profile_picture: Optional[str] = None
     banner: Optional[str] = None
     last_active_at: Optional[int] = None
+    muted_until: Optional[int] = None
 
     @model_validator(mode="after")
     def set_system_active(self) -> "UserResponse":
@@ -63,6 +65,7 @@ class UserResponse(BaseModel):
 
 class UserUpdate(BaseModel):
     username: str
+    display_name: Optional[str] = None
     description: Optional[str] = None
     profile_picture: Optional[str] = None
     banner: Optional[str] = None
@@ -172,4 +175,21 @@ class UnreadState(BaseModel):
     server_id: Optional[int] = None
     last_read_message_id: int
     last_message_id: int
-    mentions_count: int
+    mentions_count: int
+
+# ==========================================
+# 6. ADMIN SCHEMAS
+# ==========================================
+class MuteRequest(BaseModel):
+    duration_seconds: int = 0
+
+class PromoteRequest(BaseModel):
+    role: str
+
+class JoinedServer(BaseModel):
+    server_id: int
+    server_name: str
+
+class AdminUserResponse(UserResponse):
+    joined_servers: List[JoinedServer] = []
+
